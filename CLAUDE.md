@@ -2,49 +2,57 @@
 
 ## 项目概述
 
-AgentEvaluateSystem 是一个企业级 Agent 评估平台。用户提交 Agent 源代码后，系统在隔离沙箱中自动执行四维评测（结果/过程/效率/安全），输出评分、雷达图报告和改进建议。
+AgentEvaluateSystem 是一个企业级 Agent 评估平台。用户提交 Agent 源代码后，系统在隔离沙箱中自动执行企业级多维度评测，输出评分、雷达图报告、归因分析和改进建议。
+
+**核心设计文档**：`docs/SDD.md`（v2.0 完整版，基于知识库 Agent 评测方法论）
 
 ## 关键技术决策
 
-- **后端**: Python 3.12 + FastAPI + Celery + RabbitMQ，AI/ML 生态成熟，异步高性能
+- **后端**: Python 3.12 + FastAPI + Celery + RabbitMQ
 - **前端**: React 18 + TypeScript + Tailwind CSS + ECharts
-- **沙箱**: Docker + gVisor (容器级) / Firecracker (VM级强隔离)
-- **数据**: PostgreSQL 16（结构化数据）、Redis 7（缓存/队列状态）、MinIO（对象存储）
+- **沙箱**: 三级隔离 — Docker (只读) / gVisor (可写) / Firecracker VM (高风险)
+- **数据**: PostgreSQL 16 / Redis 7 / MinIO
 - **可观测性**: OpenTelemetry + Jaeger + Prometheus + Grafana
-- **部署**: Kubernetes（生产）、Docker Compose（开发）
-- **CI/CD**: GitHub Actions
+- **部署**: Kubernetes (生产) / Docker Compose (开发)
 
 ## 核心架构（六层模型）
 
 1. 展示层 — React SPA / REST API / WebSocket
 2. API 网关层 — 认证鉴权、限流熔断、审计日志
-3. 评测编排层 — 任务调度、Pipeline 编排、状态机管理
-4. 评测引擎层 — 静态分析、基准测试、LLM-as-Judge、轨迹评测、对抗评测、评分聚合
-5. 沙箱运行时层 — Docker/gVisor/Firecracker 隔离执行
-6. 基础设施层 — K8s、PostgreSQL、Redis、MinIO
+3. 评测编排层 — 任务调度、Pipeline DAG、状态机、门禁、回归触发
+4. 评测引擎层 — 短程/长程分流、Skill 评测、AI Judge、对抗评测、评分聚合、归因分析
+5. 评测基建层 — 全链路回放、Case 管理、回归引擎、自评修正闭环
+6. 沙箱运行时层 — 三级隔离 (只读/可写/高风险)
 
-## 评测体系（核心）
+## 评测体系（核心，详见 `docs/SDD.md` 第 2 章）
 
-评测体系遵循方法论（来自个人知识库 doc:`07-agent`）：
+- **短程 vs 长程 Agent**：评测策略根本不同。短程=批改作文（6 项指标），长程=审计流水线（Task 三元组）
+- **四层评测**: 结果 / 过程 / 效率 / 风险
+- **分层指标桥接**: 业务→任务→Agent→模型，层层可追溯（SDD §2.4）
+- **客观 + 主观并行**: 能用规则的用规则，剩下的用 LLM-as-Judge 并努力收敛（SDD §2.5）
+- **人人一致 + 人机一致**: Dictator 仲裁 + 85% 信任阈值（SDD §2.6）
+- **Rubric 二元化**: 是/否/未知，用 Unknown 反查 Rubric 健康度（SDD §2.7）
+- **数据飞轮**: 采集→清洗→评测→质检→归因→优化（SDD §2.8）
+- **Bad Case 价值 > 通过样本**: 驱动评测体系持续进化（SDD §2.8.3）
+- **Skill 全生命周期**: 编写→发版→上线→监控（SDD §2.13）
+- **七项基建能力**: 回放/Case/沙箱/AI Judge/归因/回归/门禁（SDD §2.14）
+- **自评修正闭环**: 执行→评测→归因→修正→重试，防退化刚性保障（SDD §2.15）
+- **五类归因**: 规划/工具调用/Skill/环境/模型能力（SDD §6.4.2）
 
-- **四层评测**: 结果层（Response Evaluation）+ 过程层（Trajectory Evaluation）+ 效率层 + 风险层
-- **双轨并行**: 客观指标 + LLM-as-Judge 主观评测
-- **分层指标桥接**: 业务层 → 任务层 → Agent 层 → 模型层，层层可追溯
-- **人机一致性校验**: LLM-as-Judge 与人评一致性需 ≥ 85%
-- **Rubric 二元化**: 模糊指标拆为 是/否/未知
-- **安全第一**: 所有第三方 Agent 代码默认不信任，沙箱强隔离
-
-评测引擎是系统的核心模块，代码位于 `backend/app/engine/`，包含六个子引擎：
+## 评测引擎模块 (`backend/app/engine/`)
 
 | 文件 | 职责 |
 |------|------|
-| `result_eval.py` | 结果层评测：准确性、完整性、相关性、连贯性 |
-| `trajectory_eval.py` | 过程层评测：工具选择正确率、推理路径质量、幻觉率 |
-| `efficiency_eval.py` | 效率层评测：Token 消耗、延迟、步骤效率、成本 |
-| `security_eval.py` | 风险层评测：Prompt 注入、越狱、危险操作拦截 |
-| `llm_judge.py` | LLM-as-Judge：双 Judge 独立打分，偏差 > 2 分引入第三仲裁 |
+| `result_eval.py` | 结果层评测：短程 6 指标 (准确性/相关性/流畅性/有帮助性/安全性/连贯性)；长程完成率+正确性 |
+| `trajectory_eval.py` | 过程层评测：规划质量/工具选择/参数正确性/错误恢复率/幻觉率/步骤冗余 |
+| `efficiency_eval.py` | 效率层评测：步骤效率/Token效率/延迟P50-P99/单任务成本 |
+| `security_eval.py` | 风险层评测：注入抵抗/越狱抵抗/危险操作拦截/误拒率/数据泄露 |
+| `skill_eval.py` | Skill 评测：单 Skill 独立评测 + Skill N+1 集成评测 |
+| `llm_judge.py` | AI Judge：双模型独立打分 + 仲裁机制 + 人机一致率持续监控 |
 | `adversarial.py` | 对抗评测：PAIR/TAP 自动红队攻击生成 |
-| `aggregator.py` | 评分聚合：加权计算 + Benchmark 对比 + 归因分析 |
+| `attribution.py` | 归因分析：五类归因 + 修正策略映射 |
+| `aggregator.py` | 评分聚合：加权计算 + Benchmark 对比 |
+| `self_eval_loop.py` | 自评修正闭环：防退化重检 + 降级策略 |
 
 ## 沙箱安全
 

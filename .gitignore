@@ -1,0 +1,59 @@
+# Byte-compiled
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.venv/
+venv/
+env/
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build
+dist/
+build/
+*.egg-info/
+
+# Docker
+docker-compose.override.yml
+
+# Logs
+*.log
+logs/
+
+# Uploads / Temp
+uploads/
+tmp/
+temp/
+
+# MinIO data (dev)
+data/
+
+# Node
+node_modules/
+frontend/dist/
+frontend/.next/
+
+# Coverage
+.coverage
+htmlcov/
+coverage/
+
+# Kubernetes secrets
+deploy/kubernetes/secrets/
+*.kubeconfig
+
+# Sandbox artifacts
+sandbox/tmp/

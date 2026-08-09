@@ -1,0 +1,18 @@
+schema_version: 1
+entry_service: agent
+runtime:
+  protocol: http
+  port: 8080
+  healthcheck: { method: GET, path: /health }
+  invoke_path: /v1/evaluations/run
+  startup_timeout_seconds: 120
+  case_timeout_seconds: 300
+  state_scope: case
+environment:
+  public: {}
+  secret_refs:
+    - target: OPENAI_API_KEY
+      source: evaluation.llm_api_key
+network:
+  mode: none
+  allowed_domains: []

@@ -32,21 +32,26 @@ export async function register(username: string, email: string, password: string
 }
 
 export type SubmissionForm = {
-  agent_name: string; description: string; llm_provider: string; llm_model: string;
-  llm_api_base: string; llm_api_key: string; subtype?: string; enabled_tools: string[];
+    agent_name: string; description: string; llm_provider: string; llm_model: string;
+    llm_api_base: string; agent_type: "short_horizon" | "long_horizon"; subtype?: string; enabled_tools: string[];
 };
 
-export async function submitAgent(file: File, config: SubmissionForm) {
+export async function submitAgent(
+  source: File, compose: File, runtimeConfig: File, interfaceSpec: File, metadata: SubmissionForm,
+) {
   const form = new FormData();
-  form.append("package", file);
-  form.append("config_data", JSON.stringify(config));
-  return api<{ id: string; status: string; risk_level: string }>("/submissions", { method: "POST", body: form });
+  form.append("source", source);
+  form.append("compose", compose);
+  form.append("runtime_config", runtimeConfig);
+  form.append("interface_spec", interfaceSpec);
+  form.append("metadata_json", JSON.stringify(metadata));
+  return api<{ id: string; status: string; risk_level: string }>("/submissions/verified", { method: "POST", body: form });
 }
 
 export type SubmissionStatus = {
   id: string;
   status: string;
-  build_mode: "dockerfile" | "legacy";
+  build_mode: "compose";
   build_status: string;
   runtime_protocol: "stdio" | "http";
   image_ref: string | null;
@@ -61,13 +66,27 @@ export function getSubmissionStatus(id: string) {
 export type EvaluationSummary = { id: string; agent_name: string; agent_type: string; overall_score: number | null; grade: string | null; status: string; created_at: string };
 export type EvaluationReport = { id: string; status: string; agent_type: string; horizon: string; overall_score: number | null; grade: string | null; dimensions: Record<string, number> | null; improvement_suggestions: Array<{ severity: string; category: string; description: string; recommendation: string }>; created_at?: string };
 export type Trace = { spans: Array<Record<string, unknown>> };
+export type EvaluationCaseSummary = {
+  id: string; case_key: string; title: string; suite: string; status: string;
+  capability_ids: string[]; dimension_scores: Record<string, number> | null;
+  unknown_weight: number | null; error_code: string | null;
+};
 export type TestCase = { id: string; task_id: string; agent_type: string; tier: string; status: string; prompt: string };
 
 export const evaluationsApi = {
   list: () => api<{ items: EvaluationSummary[] }>("/evaluations"),
   report: (id: string) => api<EvaluationReport>(`/evaluations/${id}/report`),
   trace: (id: string) => api<Trace>(`/evaluations/${id}/trace`),
-  start: (submissionId: string, llmApiKey: string) => api<{ evaluation_id: string }>(`/evaluations/${submissionId}/start`, { method: "POST", body: JSON.stringify({ llm_api_key: llmApiKey }) }),
+  cases: (id: string) => api<{ items: EvaluationCaseSummary[] }>(`/evaluations/${id}/cases`),
+  start: (submissionId: string, llmApiKey: string, caseSetId?: string) => api<{ evaluation_id: string }>(`/evaluations/${submissionId}/start`, { method: "POST", body: JSON.stringify({ llm_api_key: llmApiKey, case_set_id: caseSetId ?? null }) }),
+};
+
+export type CaseSetSummary = { id: string; version: number; status: string; target_case_count: number; actual_case_count: number };
+export const caseSetsApi = {
+  generate: (submissionId: string, targetCount?: number) => api<{ task_id: string }>(`/submissions/${submissionId}/case-sets/generate`, {
+    method: "POST", body: JSON.stringify({ target_count: targetCount ?? null }),
+  }),
+  list: (submissionId: string) => api<{ items: CaseSetSummary[] }>(`/submissions/${submissionId}/case-sets`),
 };
 
 export const casesApi = {

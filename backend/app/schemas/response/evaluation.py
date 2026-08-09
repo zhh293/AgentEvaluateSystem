@@ -4,10 +4,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class DimensionScore(BaseModel):
-    result: float = 0.0
-    trajectory: float = 0.0
-    efficiency: float = 0.0
-    security: float = 0.0
+    result: float | None = None
+    trajectory: float | None = None
+    efficiency: float | None = None
+    security: float | None = None
 
 
 class RadarChartData(BaseModel):
@@ -36,6 +36,7 @@ class EvaluationReport(BaseModel):
     attribution: dict | None = None
     improvement_suggestions: list[ImprovementSuggestion] = Field(default_factory=list)
     benchmark_comparison: dict | None = None
+    report_full: dict | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
     created_at: datetime | None = None

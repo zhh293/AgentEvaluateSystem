@@ -63,6 +63,26 @@ spec:
 ---
 apiVersion: apps/v1
 kind: Deployment
+metadata: { name: case-generator, namespace: agent-eval }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: case-generator } }
+  template:
+    metadata: { labels: { app: case-generator } }
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: case-generator
+          image: ghcr.io/OWNER/agent-eval-backend:latest
+          command: ["celery", "-A", "app.core.celery_app", "worker", "-Q", "case-generation", "--concurrency=2"]
+          envFrom: [{ configMapRef: { name: agent-eval-config } }, { secretRef: { name: agent-eval-secrets } }]
+          resources: { requests: { cpu: 250m, memory: 512Mi }, limits: { cpu: "1", memory: 1Gi } }
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ["ALL"] } }
+          volumeMounts: [{ name: tmp, mountPath: /tmp }]
+      volumes: [{ name: tmp, emptyDir: { sizeLimit: 256Mi } }]
+---
+apiVersion: apps/v1
+kind: Deployment
 metadata: { name: builder, namespace: agent-eval }
 spec:
   replicas: 1

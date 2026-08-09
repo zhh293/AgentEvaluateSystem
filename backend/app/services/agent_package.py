@@ -203,6 +203,64 @@ def load_package_contract(root: Path, requested_dockerfile: str | None = None) -
     )
 
 
+def compile_uploaded_contract(
+    root: Path,
+    compose_content: bytes,
+    runtime_config: Any,
+) -> AgentPackageContract:
+    """Compile untrusted uploaded topology/config into the internal contract.
+
+    The temporary Compose file is only parsed by the platform. It is removed
+    immediately and is never executed with Docker Compose.
+    """
+    if len(compose_content) > 512 * 1024:
+        raise ValidationException("Docker Compose 文件超过 512KB 限制")
+    project_root = _detect_project_root(root)
+    temporary = project_root / ".agenteval-uploaded-compose.yaml"
+    if temporary.exists():
+        raise ValidationException("源码包包含平台保留文件 .agenteval-uploaded-compose.yaml")
+    try:
+        temporary.write_bytes(compose_content)
+        services = _load_compose(temporary, project_root)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+    entry_service = runtime_config.entry_service
+    if entry_service not in {service.name for service in services}:
+        raise ValidationException("runtime config 的 entry_service 不存在于 Compose services")
+    runtime = runtime_config.runtime
+    protocol = "http" if runtime.protocol.value == "http" else "stdio"
+    if protocol == "stdio" and len(services) != 1:
+        raise ValidationException("CLI Agent 必须使用单服务 Compose；多服务调用统一使用 HTTP")
+    security = runtime_config.network
+    return AgentPackageContract(
+        schema_version=1,
+        deployment=DeploymentContract(
+            type="compose",
+            compose_file="uploaded:docker-compose.yaml",
+            entry_service=entry_service,
+            services=services,
+        ),
+        build=BuildContract(mode="compose"),
+        runtime=RuntimeContract(
+            protocol=protocol,
+            port=runtime.port,
+            healthcheck=runtime.healthcheck.path if runtime.healthcheck else "/health",
+            invoke=runtime.invoke_path,
+            reset=runtime.reset.path if runtime.reset else None,
+            timeout_seconds=runtime.case_timeout_seconds,
+            startup_timeout_seconds=runtime.startup_timeout_seconds,
+            command=runtime.command,
+            state_scope=runtime.state_scope,
+        ),
+        security=SecurityContract(
+            network=security.mode,
+            allowed_domains=tuple(security.allowed_domains),
+        ),
+        manifest_path="verified-manifest.json",
+    )
+
+
 def _load_compose(path: Path, project_root: Path) -> tuple[ComposeService, ...]:
     if not path.is_file() or path.stat().st_size > 512 * 1024:
         raise ValidationException("Compose 文件不存在或超过 512KB")

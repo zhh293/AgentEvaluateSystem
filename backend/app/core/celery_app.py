@@ -12,6 +12,7 @@ celery_app.conf.update(
     task_track_started=True,
     task_routes={
         "app.worker.tasks.build_submission_image": {"queue": "build"},
+        "app.worker.tasks.generate_submission_case_set": {"queue": "case-generation"},
         "app.worker.tasks.*": {"queue": "evaluation"},
     },
     task_annotations={

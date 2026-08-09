@@ -11,6 +11,8 @@ services:
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-development-only-secret-change-before-production}
+      JUDGE_API_KEY: ${JUDGE_API_KEY:-}
+      JUDGE_API_BASE: ${JUDGE_API_BASE:-https://api.openai.com/v1}
     ports: ["8000:8000"]
     depends_on:
       postgres: { condition: service_healthy }
@@ -29,9 +31,28 @@ services:
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-development-only-secret-change-before-production}
+      JUDGE_API_KEY: ${JUDGE_API_KEY:-}
+      JUDGE_API_BASE: ${JUDGE_API_BASE:-https://api.openai.com/v1}
     depends_on: [backend]
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+
+  case-generator:
+    build: ../../backend
+    command: ["celery", "-A", "app.core.celery_app", "worker", "-Q", "case-generation", "--concurrency=2"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://agenteval:${POSTGRES_PASSWORD:-devpass}@postgres:5432/agent_eval
+      REDIS_URL: redis://redis:6379/0
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672//
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-development-only-secret-change-before-production}
+      JUDGE_API_KEY: ${JUDGE_API_KEY:-}
+      JUDGE_API_BASE: ${JUDGE_API_BASE:-https://api.openai.com/v1}
+      CASE_COUNCIL_MODELS: ${CASE_COUNCIL_MODELS:-gpt-4o,gpt-4o-mini,o3-mini}
+      CASE_COUNCIL_CHAIR_MODEL: ${CASE_COUNCIL_CHAIR_MODEL:-gpt-4o}
+    depends_on: [backend]
 
   # Development-only builder. Production must replace this Docker Socket
   # mount with an isolated rootless builder endpoint.

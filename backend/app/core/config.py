@@ -68,10 +68,13 @@ class Settings(BaseSettings):
 
     # LLM-as-Judge
     JUDGE_MODEL_A: str = "gpt-4o"
-    JUDGE_MODEL_B: str = "claude-sonnet-4-6"
+    JUDGE_MODEL_B: str = "gpt-4o-mini"
     JUDGE_API_TIMEOUT: int = 60
     JUDGE_API_KEY: str = ""  # 系统自有 LLM API Key（用于类型识别等系统功能）
     JUDGE_API_BASE: str = "https://api.openai.com/v1"
+    CASE_COUNCIL_MODELS: str = "gpt-4o,gpt-4o-mini,o3-mini"
+    CASE_COUNCIL_CHAIR_MODEL: str = "gpt-4o"
+    CASE_COUNCIL_MIN_REVIEWERS: int = 2
     ALLOW_PRIVATE_MODEL_ENDPOINTS: bool = False
     MODEL_ENDPOINT_ALLOWED_DOMAINS: str = "api.openai.com,api.anthropic.com,api.deepseek.com,dashscope.aliyuncs.com,open.bigmodel.cn,api.moonshot.cn"
 
@@ -103,6 +106,11 @@ class Settings(BaseSettings):
             raise ValueError("AGENT_IMAGE_PUSH must be enabled so isolated builders publish immutable images")
         if self.ENVIRONMENT.lower() == "production" and not self.AGENT_TRIVY_PATH:
             raise ValueError("AGENT_TRIVY_PATH must be configured for production image scanning")
+        if self.ENVIRONMENT.lower() == "production" and not self.JUDGE_API_KEY:
+            raise ValueError("JUDGE_API_KEY must be configured for production Case Council and judging")
+        council_models = [item.strip() for item in self.CASE_COUNCIL_MODELS.split(",") if item.strip()]
+        if self.ENVIRONMENT.lower() == "production" and len(set(council_models)) < 3:
+            raise ValueError("CASE_COUNCIL_MODELS must contain at least 3 distinct models in production")
         return self
 
 @lru_cache()

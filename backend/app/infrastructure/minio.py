@@ -74,6 +74,14 @@ class MinIOClient:
         self.client.put_object(self.bucket, object_name, io.BytesIO(data), len(data), content_type=content_type)
         return object_name
 
+    def upload_bytes(self, object_name: str, content: bytes, content_type: str) -> tuple[str, str]:
+        self.ensure_bucket()
+        digest = hashlib.sha256(content).hexdigest()
+        self.client.put_object(
+            self.bucket, object_name, io.BytesIO(content), len(content), content_type=content_type
+        )
+        return object_name, digest
+
 
 minio_client = MinIOClient()
 

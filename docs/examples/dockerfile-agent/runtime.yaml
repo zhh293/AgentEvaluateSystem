@@ -1,0 +1,14 @@
+schema_version: 1
+entry_service: agent
+runtime:
+  protocol: cli
+  command: [python, /app/main.py]
+  startup_timeout_seconds: 30
+  case_timeout_seconds: 300
+  state_scope: case
+environment:
+  public: {}
+  secret_refs: []
+network:
+  mode: none
+  allowed_domains: []

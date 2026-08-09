@@ -37,6 +37,7 @@ class AgentImageRuntime:
         environment: dict[str, str],
         risk_level: str = "low",
         service_images: dict[str, str] | None = None,
+        invocation: dict[str, Any] | None = None,
     ) -> AgentExecution:
         timeout = contract.runtime.timeout_seconds
         network = None
@@ -68,7 +69,7 @@ class AgentImageRuntime:
                 if network is None:
                     raise RuntimeError("Compose 部署必须使用独立内部网络")
                 containers, volumes = await asyncio.to_thread(
-                    self._create_compose, evaluation_id, contract, service_images or {}, environment, network.name, risk_level
+                    self._create_compose, evaluation_id, contract, service_images or {}, environment, network.name, risk_level, invocation
                 )
                 container = next(c for c in containers if c.labels.get("agenteval.entry_service") == "true")
             else:
@@ -91,8 +92,8 @@ class AgentImageRuntime:
         SANDBOX_ACTIVE.inc()
         try:
             if contract.runtime.protocol == "stdio":
-                return await self._run_stdio(container, contract, task, timeout)
-            return await self._run_http(container, contract, task, timeout, network.name)
+                return await self._run_stdio(container, contract, invocation or task, timeout)
+            return await self._run_http(container, contract, invocation or task, timeout, network.name)
         finally:
             for managed in reversed(containers):
                 await asyncio.to_thread(self._destroy, managed)
@@ -113,7 +114,7 @@ class AgentImageRuntime:
                     pass
             SANDBOX_ACTIVE.dec()
 
-    def _create_compose(self, evaluation_id: str, contract: AgentPackageContract, service_images: dict[str, str], environment: dict[str, str], network_name: str, risk_level: str):
+    def _create_compose(self, evaluation_id: str, contract: AgentPackageContract, service_images: dict[str, str], environment: dict[str, str], network_name: str, risk_level: str, invocation: dict[str, Any] | None = None):
         """Materialize the validated topology without executing user Compose."""
         volumes: dict[str, Any] = {}
         for service in contract.deployment.services:
@@ -140,10 +141,14 @@ class AgentImageRuntime:
                         raise RuntimeError(f"Compose 服务 {service.name} 没有已构建镜像")
                     is_entry = service.name == contract.deployment.entry_service
                     mounts = {volumes[source].name: {"bind": target, "mode": "rw"} for source, target in service.volumes}
+                    case_command = service.command
+                    if is_entry and contract.runtime.protocol == "stdio" and invocation and invocation.get("argv"):
+                        case_command = list(invocation["argv"])
                     container = self._create_service(
-                        evaluation_id, service.name, image, service.command, service.entrypoint,
+                        evaluation_id, service.name, image, case_command, service.entrypoint,
                         service_environment, mounts, network_name, risk_level, is_entry, contract, service.healthcheck,
                     )
+                    self.client.networks.get(network_name).connect(container, aliases=[service.name])
                     container.start()
                     ordered.append(container)
                     if service.healthcheck:
@@ -173,11 +178,11 @@ class AgentImageRuntime:
         options = {"runtime": runtime_name} if runtime_name else {}
         return self.client.containers.create(
             image=image, name=f"agenteval-{evaluation_id}-{service_name}", command=command,
-            entrypoint=entrypoint, detach=True, environment=env, network=network_name,
-            hostname=service_name, volumes=volumes, read_only=is_entry,
+            entrypoint=entrypoint, detach=True, environment=env, network_mode="none",
+            hostname=service_name, volumes=volumes, read_only=True,
             mem_limit=settings.AGENT_RUNTIME_MEMORY_BYTES, nano_cpus=settings.AGENT_RUNTIME_NANO_CPUS,
             pids_limit=settings.AGENT_RUNTIME_PIDS_LIMIT, cap_drop=["ALL"],
-            security_opt=["no-new-privileges:true"], user=settings.AGENT_RUNTIME_USER if is_entry else None,
+            security_opt=["no-new-privileges:true"], user=settings.AGENT_RUNTIME_USER,
             tmpfs={"/tmp": "rw,noexec,nosuid,size=64m"},
             log_config={"type": "local", "config": {"max-size": "10m", "max-file": "1"}},
             healthcheck={"test": ["CMD", *healthcheck], "interval": 2_000_000_000,
@@ -318,7 +323,9 @@ class AgentImageRuntime:
         )
         await asyncio.to_thread(container.start)
         raw_socket = getattr(attached, "_sock", attached)
-        await asyncio.to_thread(raw_socket.sendall, (json.dumps(task, ensure_ascii=False) + "\n").encode("utf-8"))
+        stdin_value = task.get("stdin") if task.get("protocol") == "cli" else None
+        wire_input = stdin_value if isinstance(stdin_value, str) else json.dumps(task, ensure_ascii=False)
+        await asyncio.to_thread(raw_socket.sendall, (wire_input + "\n").encode("utf-8"))
         try:
             raw_socket.shutdown(socket.SHUT_WR)
         except OSError:
@@ -342,10 +349,14 @@ class AgentImageRuntime:
             raise RuntimeError("Agent 标准输出超过大小限制")
         try:
             payload = json.loads(stdout)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(f"Agent 标准输出不是单个 JSON 对象: {stdout[-1000:]}") from exc
+        except json.JSONDecodeError:
+            payload = {"result": {"status": "success", "output": stdout, "cli": {
+                "exit_code": 0, "stdout": stdout, "stderr": stderr,
+            }}, "trace": {"spans": []}}
         if not isinstance(payload, dict):
-            raise RuntimeError("Agent 标准输出必须是 JSON 对象")
+            payload = {"result": {"status": "success", "output": payload, "cli": {
+                "exit_code": 0, "stdout": stdout, "stderr": stderr,
+            }}, "trace": {"spans": []}}
         trace = payload.pop("trace", {"spans": []})
         result = payload.get("result", payload)
         if not isinstance(result, dict) or not isinstance(trace, dict):
@@ -379,7 +390,6 @@ class AgentImageRuntime:
             environment={
                 "AGENT_BASE_URL": f"http://{container.name}:{contract.runtime.port}",
                 "AGENT_HEALTH_PATH": contract.runtime.healthcheck,
-                "AGENT_INVOKE_PATH": contract.runtime.invoke,
                 "AGENT_TIMEOUT_SECONDS": str(timeout),
             },
             tmpfs={"/tmp": "rw,noexec,nosuid,size=16m"},

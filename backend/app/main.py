@@ -10,7 +10,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from app.core.config import settings
 from app.core.logging import setup_logging
 from app.core.error_handlers import register_error_handlers
-from app.api.v1 import admin_router, auth_router, evaluations_router, quality_gates_router, submissions_router, test_cases_router, trace_router, websocket_router
+from app.api.v1 import admin_router, auth_router, case_sets_router, evaluations_router, quality_gates_router, submissions_router, test_cases_router, trace_router, websocket_router
 from app.core.rate_limiter import RateLimiter
 from app.core.security import verify_token
 from app.core.metrics import HTTP_DURATION, HTTP_REQUESTS
@@ -64,6 +64,7 @@ app.include_router(test_cases_router, prefix="/v1")
 app.include_router(trace_router, prefix="/v1")
 app.include_router(admin_router, prefix="/v1")
 app.include_router(quality_gates_router, prefix="/v1")
+app.include_router(case_sets_router, prefix="/v1")
 
 
 @app.get("/health")

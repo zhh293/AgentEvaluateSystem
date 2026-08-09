@@ -1,0 +1,18 @@
+openapi: 3.1.0
+info: { title: Example Agent, version: 1.0.0 }
+paths:
+  /v1/evaluations/run:
+    post:
+      operationId: runAgent
+      summary: 执行一个 Agent 任务
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200":
+          description: Agent 执行结果
+          content:
+            application/json:
+              schema: { type: object }

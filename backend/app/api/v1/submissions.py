@@ -15,6 +15,10 @@ from app.core.exceptions import ValidationException, NotFoundException, QueueUna
 from app.core.security import get_current_user
 from app.models.user import User
 from app.worker.tasks import build_submission_image
+from app.models.artifact import Artifact, VerifiedManifest
+from app.models.capability import Capability, CapabilityCatalog
+from app.schemas.request.intake import RuntimeConfigUpload, SubmissionMetadata
+from app.services.manifest_service import GENERATOR_VERSION, compile_verified_manifest
 
 router = APIRouter(prefix="/submissions", tags=["submissions"])
 
@@ -27,7 +31,128 @@ ALLOWED_MIME_TYPES = {
 }
 
 
-@router.post("", response_model=SubmissionResponse, status_code=201)
+@router.post("/verified", response_model=SubmissionResponse, status_code=201)
+async def submit_verified_agent(
+    source: UploadFile = File(...),
+    compose: UploadFile = File(...),
+    runtime_config: UploadFile = File(...),
+    interface_spec: UploadFile = File(...),
+    metadata_json: str = Form(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Canonical immutable four-artifact submission endpoint."""
+    try:
+        metadata = SubmissionMetadata.model_validate_json(metadata_json)
+    except Exception as exc:
+        raise ValidationException(f"metadata_json 校验失败: {exc}") from exc
+    source_bytes, compose_bytes = await source.read(), await compose.read()
+    runtime_bytes, spec_bytes = await runtime_config.read(), await interface_spec.read()
+    if not source.filename or not compose.filename or not runtime_config.filename or not interface_spec.filename:
+        raise ValidationException("所有上传 Artifact 都必须包含文件名")
+    if source.content_type and source.content_type not in ALLOWED_MIME_TYPES:
+        raise ValidationException(f"不支持的源码包类型: {source.content_type}")
+    if len(runtime_bytes) > 256 * 1024:
+        raise ValidationException("运行配置超过 256KB 限制")
+    try:
+        import yaml
+        runtime_payload = yaml.safe_load(runtime_bytes.decode("utf-8"))
+        runtime = RuntimeConfigUpload.model_validate(runtime_payload)
+    except Exception as exc:
+        raise ValidationException(f"运行配置校验失败: {exc}") from exc
+
+    result = await submission_service.run_verified_pipeline(
+        metadata, runtime, source_bytes, source.filename, compose_bytes,
+        spec_bytes, interface_spec.filename,
+    )
+    submission = result.submission
+    submission.user_id = current_user.id
+    db.add(submission)
+    await db.flush()
+    submission_id = str(submission.id)
+    uploaded: list[str] = []
+    try:
+        artifact_specs = [
+            ("source", source.filename, source_bytes, source.content_type or "application/octet-stream"),
+            ("compose", compose.filename, compose_bytes, compose.content_type or "application/yaml"),
+            ("runtime_config", runtime_config.filename, runtime_bytes, runtime_config.content_type or "application/yaml"),
+            ("interface_spec", interface_spec.filename, spec_bytes, interface_spec.content_type or "application/yaml"),
+        ]
+        artifact_digests: dict[str, str] = {}
+        for artifact_type, filename, content, media_type in artifact_specs:
+            safe_name = filename.replace("\\", "_").replace("/", "_")
+            path, digest = minio_client.upload_bytes(
+                f"submissions/{submission_id}/artifacts/{artifact_type}/{safe_name}", content, media_type
+            )
+            uploaded.append(path)
+            artifact_digests[artifact_type] = digest
+            db.add(Artifact(
+                owner_type="submission", owner_id=submission.id, artifact_type=artifact_type,
+                storage_path=path, sha256=digest, media_type=media_type,
+                size_bytes=len(content), schema_version="1",
+                metadata_json={"filename": filename},
+            ))
+            if artifact_type == "source":
+                submission.source_package_path = path
+                submission.source_package_hash = digest
+
+        compiled = compile_verified_manifest(
+            submission_id, artifact_digests["source"], artifact_digests["compose"],
+            artifact_digests["runtime_config"], artifact_digests["interface_spec"],
+            result.package_contract, runtime.environment.public,
+            [item.model_dump() for item in runtime.environment.secret_refs],
+        )
+        manifest_row = VerifiedManifest(
+            submission_id=submission.id, manifest=compiled.payload,
+            input_digest=compiled.input_digest, manifest_digest=compiled.manifest_digest,
+            generator_version=GENERATOR_VERSION,
+        )
+        db.add(manifest_row)
+        catalog_data = result.capability_catalog
+        catalog = CapabilityCatalog(
+            submission_id=submission.id, status="ready", spec_type=catalog_data.spec_type,
+            spec_digest=catalog_data.spec_digest, parser_version="1.0.0",
+            capability_count=len(catalog_data.capabilities), warnings=list(catalog_data.warnings),
+        )
+        db.add(catalog)
+        await db.flush()
+        for item in catalog_data.capabilities:
+            db.add(Capability(
+                catalog_id=catalog.id, capability_key=item.key, kind=item.kind,
+                name=item.name, description=item.description, operation=item.operation,
+                input_schema=item.input_schema, output_schema=item.output_schema,
+                constraints=item.constraints, source_pointer=item.source_pointer,
+            ))
+        durable_config = dict(submission.config)
+        durable_config.update({
+            "verified_manifest_id": str(manifest_row.id),
+            "verified_manifest_digest": compiled.manifest_digest,
+            "capability_catalog_id": str(catalog.id),
+            "interface_spec_digest": catalog_data.spec_digest,
+        })
+        submission.config = durable_config
+        await db.commit()
+        await db.refresh(submission)
+    except Exception:
+        await db.rollback()
+        for path in reversed(uploaded):
+            try:
+                minio_client.delete_package(path)
+            except Exception:
+                pass
+        raise
+
+    try:
+        build_submission_image.delay(submission_id)
+    except Exception as exc:
+        submission.status = "build_failed"
+        submission.build_status = "build_failed"
+        submission.status_message = "无法将镜像构建任务加入队列"
+        await db.commit()
+        raise QueueUnavailableException("无法将镜像构建任务加入队列") from exc
+    return _build_response(submission, result)
+
+
 async def submit_agent(
     package: UploadFile = File(...),
     config_data: str = Form(...),
@@ -158,6 +283,36 @@ async def get_sbom(
     if not submission.sbom_path:
         raise NotFoundException("SBOM 尚不可用")
     return JSONResponse(minio_client.get_json(submission.sbom_path))
+
+
+@router.get("/{submission_id}/manifest", response_class=JSONResponse)
+async def get_verified_manifest(
+    submission_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from sqlalchemy import select
+
+    submission = await _owned_submission(db, submission_id, current_user)
+    manifest = (await db.execute(
+        select(VerifiedManifest).where(VerifiedManifest.submission_id == submission.id)
+    )).scalar_one_or_none()
+    if manifest is None:
+        raise NotFoundException("Verified Manifest 尚不可用")
+    payload = dict(manifest.manifest)
+    environment = dict(payload.get("environment") or {})
+    # Expose binding targets for diagnostics but not internal credential source names.
+    environment["secret_bindings"] = [
+        {"target": item.get("target"), "configured": True}
+        for item in environment.get("secret_bindings", [])
+    ]
+    payload["environment"] = environment
+    return JSONResponse({
+        "manifest_digest": manifest.manifest_digest,
+        "input_digest": manifest.input_digest,
+        "generator_version": manifest.generator_version,
+        "manifest": payload,
+    })
 
 
 async def _owned_submission(db: AsyncSession, submission_id: str, current_user: User) -> Submission:

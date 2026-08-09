@@ -49,6 +49,28 @@ class APIKeyVault:
             return None
 
     @classmethod
+    async def retrieve(cls, submission_id: str) -> str | None:
+        """Read an evaluation-scoped credential without consuming it.
+
+        Multi-Case evaluations purge the credential only after every Case has
+        completed. Redis TTL remains the hard upper bound.
+        """
+        key = f"credential:submission:{submission_id}"
+        encrypted = None
+        try:
+            encrypted = await cls._redis.get(key)
+        except Exception:
+            local = cls._local.get(submission_id)
+            if local and local[1] >= time.monotonic():
+                encrypted = local[0]
+        if not encrypted:
+            return None
+        try:
+            return cls._fernet.decrypt(encrypted, ttl=cls.TTL_SECONDS).decode()
+        except InvalidToken:
+            return None
+
+    @classmethod
     async def purge(cls, submission_id: str) -> None:
         key = f"credential:submission:{submission_id}"
         cls._local.pop(submission_id, None)

@@ -6,5 +6,6 @@ from app.api.v1.test_cases import router as test_cases_router
 from app.api.v1.trace import router as trace_router
 from app.api.v1.admin import router as admin_router
 from app.api.v1.quality_gates import router as quality_gates_router
+from app.api.v1.case_sets import router as case_sets_router
 
-__all__ = ["submissions_router", "evaluations_router", "websocket_router", "auth_router", "test_cases_router", "trace_router", "admin_router", "quality_gates_router"]
+__all__ = ["submissions_router", "evaluations_router", "websocket_router", "auth_router", "test_cases_router", "trace_router", "admin_router", "quality_gates_router", "case_sets_router"]

@@ -618,7 +618,7 @@ safety==3.x                 # 依赖漏洞扫描
 ┌──────────────────────────────────────────────────────────┐
 │  Phase 2: 隔离构建 (异步，独立 Build Worker)                  │
 │  Compose-first → 逐服务隔离构建 → 镜像扫描/SBOM → 镜像映射     │
-│  Dockerfile 保留为单服务模式；Manifest 对所有新提交强制要求     │
+│  单/多服务统一 Compose；平台生成 Verified Manifest              │
 └──────────────────────────┬───────────────────────────────┘
                            ▼
 ┌──────────────────────────────────────────────────────────┐
@@ -662,44 +662,37 @@ safety==3.x                 # 依赖漏洞扫描
 
 ### 6.1 接入层：Agent 提交与校验
 
-#### 6.1.1 提交包规范
+#### 6.1.1 四 Artifact 提交规范
 
-```text
-submission.zip (或 tar.gz / tgz, max 50MB)
-├── docker-compose.yml           # 推荐：多服务部署拓扑
-├── agent-eval.yaml              # 必须：平台部署/调用/生命周期契约
-├── agent/Dockerfile             # 本地服务镜像构建方式
-├── agent/src/                   # 任意语言、任意多文件结构
-├── requirements.txt / pyproject.toml  # 可选：同时参与源码依赖审计
-└── tools/ / skills/ / prompts/  # 可选
-```
+新提交分别上传源码包、Docker Compose、Runtime Config 和 Interface Spec。四者独立哈希并冻结；单服务和多服务统一使用 Compose。源码包中的 Dockerfile 只作为 Compose 本地 build 的实现细节。
 
-#### 6.1.2 agent-eval.yaml 运行契约
+#### 6.1.2 Runtime Config 与 Verified Manifest
 
 ```yaml
 schema_version: 1
-deployment:
-  type: compose
-  file: docker-compose.yml
-  entry_service: agent
+entry_service: agent
 runtime:
   protocol: http
   port: 8080
-  healthcheck: /health
-  invoke: /v1/evaluations/run
-  state_scope: evaluation
-  timeout_seconds: 300
-security:
-  network: none                # none | restricted
+  healthcheck: {method: GET, path: /health}
+  invoke_path: /v1/evaluations/run
+  state_scope: case
+  case_timeout_seconds: 300
+environment:
+  public: {LOG_LEVEL: info}
+  secret_refs:
+    - {target: OPENAI_API_KEY, source: evaluation.llm_api_key}
+network:
+  mode: restricted
   allowed_domains: []
 ```
 
-业务表单仍由系统生成内部 `agent.config.yaml`，用于 Rubric、工具、模型和评测约束；它不承担项目启动职责。Compose 是部署契约，Dockerfile 是构建契约，`agent-eval.yaml` 是平台入口与调用契约，源码压缩包是不可变审计原件。AI 生成及隐藏 Rubric 只进入 Evaluator，绝不进入被测 Agent 容器。
+平台将校验后的 Compose 与 Runtime Config 编译为内部 Verified Manifest。后续构建、拓扑重建和配置注入只读取 Verified Manifest，绝不直接执行用户 Compose。AI 生成及隐藏 Rubric 只进入 Evaluator，绝不进入被测 Agent 容器。
 
 #### 6.1.3 校验流程
 
 ```
-提交包 → 安全解压 → 必需 agent-eval.yaml + Compose（或单服务 Dockerfile）
+四个 Artifact → 安全解压与独立哈希 → Compose/Runtime/Interface 确定性校验
                 │
                 ├─ 依赖声明校验
                 ├─ Agent 类型识别: short_horizon / long_horizon

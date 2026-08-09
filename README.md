@@ -7,7 +7,7 @@
 ## 能力概览
 
 - **安全接入**：ZIP/TAR.GZ 校验、防路径穿越、静态代码扫描、真实依赖漏洞审计、模型端点连通性检查。
-- **隔离执行**：Compose-first 部署完整 Agent 工程，Dockerfile 兼容单服务项目；平台解析并重建受控拓扑，绝不直接执行用户 Compose。
+- **隔离执行**：单服务与多服务统一由 Compose 声明；平台生成 Verified Manifest 并重建受控拓扑，绝不直接执行用户 Compose。
 - **四维评测**：结果正确性、轨迹质量、Token/延迟/成本、安全与数据泄露风险。
 - **Rubric 系统**：内置 Rubric、配置推导、场景模板、AI 生成、Case 解析和健康度监控。
 - **AI Judge**：严格 JSON 输出、真实 Span 证据校验、双 Judge、仲裁和人工复核标记。
@@ -144,6 +144,8 @@ uvicorn app.main:app --reload --port 8000
 新终端进入 `backend` 并激活同一虚拟环境：
 
 ```bash
+celery -A app.core.celery_app worker -Q build --concurrency=2
+celery -A app.core.celery_app worker -Q case-generation --concurrency=2
 celery -A app.core.celery_app worker -Q evaluation --concurrency=4
 ```
 
@@ -159,50 +161,13 @@ npm run dev
 
 访问 `http://localhost:3000`，注册账号后即可提交 Agent。
 
-## Agent 包约定
+## Agent 提交协议
 
-支持 `.zip`、`.tar.gz` 和 `.tgz`。源码包是不可变审计原件，执行采用 **Compose-first、Dockerfile-compatible、Manifest-required、Protocol-standardized**：Compose 描述部署拓扑，Dockerfile 描述镜像构建，`agent-eval.yaml` 描述入口服务、生命周期和调用协议。
+新提交必须分别上传四个不可变 Artifact：源码包、Docker Compose、Runtime Config 和 OpenAPI/CLI Interface Spec。单服务与多服务统一由 Compose 声明；用户不再编写 `agent-eval.yaml`。平台校验后生成内部 Verified Manifest，并根据它重建拓扑，绝不执行用户原始 Compose。
 
-推荐目录如下：
+如果 Compose 服务使用本地 `build`，Dockerfile 位于源码包中，但它只是服务镜像的构建细节，不是独立部署模式。说明书声明的每个 operation/command 都会形成 Capability，并由 Case Council 生成、匿名评审和程序校验 30～60 条 Case。只有镜像和 Case Set 分别达到 `image_ready`、`ready` 后才能评估。
 
-```text
-my-agent/
-├── docker-compose.yml     # 推荐：多服务部署拓扑
-├── agent-eval.yaml
-├── agent/Dockerfile
-├── agent/src/             # 任意语言、任意多文件结构
-└── mysql/init.sql         # 可选依赖初始化文件
-```
-
-`agent-eval.yaml` 是平台运行契约：
-
-```yaml
-schema_version: 1
-deployment:
-  type: compose
-  file: docker-compose.yml
-  entry_service: agent
-runtime:
-  protocol: http
-  port: 8080
-  healthcheck: /health
-  invoke: /v1/evaluations/run
-  state_scope: evaluation
-  timeout_seconds: 300
-security:
-  network: none            # none 或 restricted
-  allowed_domains: []
-```
-
-`stdio` 模式启动镜像默认的 `ENTRYPOINT/CMD`，平台向标准输入写入一个任务 JSON。Agent 必须在标准输出只写一个 JSON 对象，格式为 `{"result":{"status":"success","output":...},"trace":{"spans":[]}}`；诊断日志写入标准错误。这样不依赖镜像内存在 shell、Python 或约定目录。
-
-`http` 模式必须额外声明 `port`、`healthcheck` 和 `invoke`。平台先调用健康检查，再把任务 JSON POST 到调用接口；响应格式为 `{"result": {...}, "trace": {...}}`。HTTP 容器连接到平台创建的 internal 网络，不直接暴露宿主机端口。
-
-完整的多服务示例见 [`docs/examples/compose-agent`](docs/examples/compose-agent)，单容器示例见 [`docs/examples/dockerfile-agent`](docs/examples/dockerfile-agent)。规范性协议与安全语义见 [`docs/AGENT_PROJECT_PROTOCOL.md`](docs/AGENT_PROJECT_PROTOCOL.md)。所有新提交都必须提供 Manifest；平台不猜测启动命令，也不再生成旧 `agent.py` 适配器。
-
-升级迁移前已经存在、但没有镜像元数据的历史 Submission 会标记为 `reupload_required`。这是有意的安全迁移：平台不会在没有新构建契约和运行时凭据的情况下静默执行旧产物，重新上传原 ZIP 即可进入兼容构建流程。
-
-不要把模型密钥写入源码包。上传时的密钥只用于同步连通性校验，不会持久化；每次启动 Evaluation 都要重新提交运行密钥。该密钥按 `evaluation_id` 在 Redis 中加密限时保存，并由 Worker 一次性领取后立即销毁，因此同一镜像可以安全地发起多次独立评测。
+模型密钥只在创建 Evaluation 时提交，保存在加密且带 TTL 的凭据保险库中，并依据 Runtime Config 的 `secret_refs` 临时注入容器。密钥不进入源码 Artifact、Manifest、镜像、日志或 Trace。完整协议见 [`docs/AGENT_PROJECT_PROTOCOL.md`](docs/AGENT_PROJECT_PROTOCOL.md)。
 
 ## API 使用示例
 
@@ -220,7 +185,7 @@ curl -X POST http://localhost:8000/v1/auth/login \
 
 将返回的 `access_token` 保存为 `API_TOKEN`。
 
-### 2. 准备提交配置
+### 2. 准备提交元数据
 
 ```json
 {
@@ -230,33 +195,35 @@ curl -X POST http://localhost:8000/v1/auth/login \
   "llm_provider": "openai",
   "llm_model": "your-model",
   "llm_api_base": "https://api.openai.com/v1",
-  "llm_api_key": "runtime-only-key",
+  "agent_type": "short_horizon",
   "subtype": "rag",
-  "enabled_tools": ["knowledge_base_search"],
-  "language": "简体中文",
-  "max_steps": 20,
-  "max_execution_time_seconds": 300,
-  "allowed_domains": ["api.openai.com"]
+  "enabled_tools": ["knowledge_base_search"]
 }
 ```
 
-描述至少 30 个字符。`agent_type` 和 `subtype` 可以留空，由系统识别；生产环境建议明确声明并人工复核。自定义模型端点必须由管理员加入 `MODEL_ENDPOINT_ALLOWED_DOMAINS`，并且不能解析到私网、回环、链路本地或保留地址。
+另外准备 `runtime.yaml`、`docker-compose.yml` 和 OpenAPI 3.x 或结构化 CLI 说明书。格式见规范性协议。
 
 ### 3. 提交并启动评测
 
 ```bash
-curl -X POST http://localhost:8000/v1/submissions \
+curl -X POST http://localhost:8000/v1/submissions/verified \
   -H "Authorization: Bearer $API_TOKEN" \
-  -F "package=@my-agent.tar.gz" \
-  -F "config_data=<config.json"
+  -F "source=@my-agent.tar.gz" \
+  -F "compose=@docker-compose.yml" \
+  -F "runtime_config=@runtime.yaml" \
+  -F "interface_spec=@openapi.yaml" \
+  -F "metadata_json=<metadata.json"
 
 # 等待 GET /v1/submissions/SUBMISSION_ID/status 返回
-# build_status=image_ready 后才能启动评测。
-# 构建产物可通过 build-log、image-scan、sbom 三个只读端点查看。
+# image_ready 后启动 Case Council，并等待最新 Case Set 达到 ready。
+curl -X POST http://localhost:8000/v1/submissions/SUBMISSION_ID/case-sets/generate \
+  -H "Authorization: Bearer $API_TOKEN" -H "Content-Type: application/json" \
+  -d '{"target_count":null}'
+
 curl -X POST http://localhost:8000/v1/evaluations/SUBMISSION_ID/start \
   -H "Authorization: Bearer $API_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"llm_api_key":"runtime-only-key"}'
+  -d '{"llm_api_key":"runtime-only-key","case_set_id":"CASE_SET_ID"}'
 ```
 
 ### 4. 查询结果与 Trace
@@ -269,6 +236,9 @@ curl http://localhost:8000/v1/evaluations/EVALUATION_ID/trace \
   -H "Authorization: Bearer $API_TOKEN"
 
 curl -N http://localhost:8000/v1/evaluations/EVALUATION_ID/trace/replay \
+  -H "Authorization: Bearer $API_TOKEN"
+
+curl http://localhost:8000/v1/evaluations/EVALUATION_ID/cases \
   -H "Authorization: Bearer $API_TOKEN"
 ```
 

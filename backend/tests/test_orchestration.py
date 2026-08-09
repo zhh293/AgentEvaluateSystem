@@ -36,5 +36,10 @@ def test_aggregate_task_and_dag_are_serializable():
     ], "short")
     assert report["status"] == "completed"
     assert report["overall_score"] == 88
-    dag = build_evaluation_dag("submission")
+    dag = build_evaluation_dag("submission", "evaluation", "short", ["case-1"])
     assert dag is not None
+
+
+def test_evaluation_dag_requires_case_snapshots():
+    with pytest.raises(ValueError, match="at least one"):
+        build_evaluation_dag("submission", "evaluation", "short", [])

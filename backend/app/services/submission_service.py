@@ -17,8 +17,10 @@ from app.services.config_generator import config_generator
 from app.services.model_connectivity import ConnectivityResult, connectivity_checker
 from app.services.risk_analyzer import RiskAssessment, assess_risk_level
 from app.services.security_service import SecurityScanResult, security_scanner, ScanStatus
-from app.services.agent_package import AgentPackageContract, SecurityContract, load_package_contract, reject_packaged_secrets, resolve_project_root
+from app.services.agent_package import AgentPackageContract, SecurityContract, compile_uploaded_contract, load_package_contract, reject_packaged_secrets, resolve_project_root
 from app.services.image_builder import validate_dockerfile
+from app.schemas.request.intake import RuntimeConfigUpload, SubmissionMetadata
+from app.services.capability_service import ParsedCatalog, parse_interface_spec
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,7 @@ class PipelineResult:
     scan_result: SecurityScanResult | None = None
     risk_assessment: RiskAssessment | None = None
     package_contract: AgentPackageContract | None = None
+    capability_catalog: ParsedCatalog | None = None
 
 
 class SubmissionService:
@@ -142,6 +145,75 @@ class SubmissionService:
             scan_result=scan_result,
             risk_assessment=risk,
             package_contract=package_contract,
+        )
+
+    async def run_verified_pipeline(
+        self,
+        metadata: SubmissionMetadata,
+        runtime_config: RuntimeConfigUpload,
+        package_bytes: bytes,
+        package_filename: str,
+        compose_bytes: bytes,
+        interface_spec_bytes: bytes,
+        interface_spec_filename: str,
+    ) -> PipelineResult:
+        """Validate the four explicit submission artifacts without user Manifest.
+
+        This is the canonical intake path. It performs all deterministic checks
+        before any durable object is created or asynchronous build is queued.
+        """
+        validate_and_extract(package_bytes, package_filename)
+        catalog = parse_interface_spec(interface_spec_bytes, interface_spec_filename)
+        extract_dir = _extract_package(package_bytes, package_filename)
+        try:
+            reject_packaged_secrets(extract_dir)
+            contract = compile_uploaded_contract(extract_dir, compose_bytes, runtime_config)
+            project_root = resolve_project_root(extract_dir, contract)
+            for service in contract.deployment.services:
+                if service.dockerfile:
+                    validate_dockerfile(project_root / str(service.context or ".") / service.dockerfile)
+            requirements_txt = _read_requirements(extract_dir)
+            scan_result = security_scanner.full_audit(extract_dir, requirements_txt)
+            if scan_result.status == ScanStatus.REJECTED:
+                high_issues = [issue for issue in scan_result.issues if issue.severity.value == "high"]
+                detail = "; ".join(f"[{issue.code}] {issue.message}" for issue in high_issues[:3])
+                raise ValidationException(f"安全扫描不通过: {detail}")
+        finally:
+            _cleanup_dir(extract_dir)
+
+        matched_tools = match_enabled_tools(metadata.enabled_tools)
+        risk = assess_risk_level(matched_tools, scan_result, metadata.agent_type)
+        config = {
+            **metadata.model_dump(),
+            "runtime_config": runtime_config.model_dump(mode="json"),
+            "package_contract": contract.as_dict(),
+        }
+        submission = Submission(
+            agent_name=metadata.agent_name,
+            version=metadata.version,
+            agent_type=metadata.agent_type,
+            horizon="long" if metadata.agent_type == "long_horizon" else "short",
+            subtype=metadata.subtype,
+            risk_level=risk.level.value,
+            config=config,
+            source_package_path="",
+            source_package_hash="",
+            status="build_queued",
+            build_mode="compose",
+            deployment_type="compose",
+            compose_file="uploaded:docker-compose.yaml",
+            entry_service=contract.deployment.entry_service,
+            dockerfile_path=None,
+            runtime_protocol=contract.runtime.protocol,
+            build_status="queued",
+        )
+        return PipelineResult(
+            submission=submission,
+            matched_tools=matched_tools,
+            scan_result=scan_result,
+            risk_assessment=risk,
+            package_contract=contract,
+            capability_catalog=catalog,
         )
 
 

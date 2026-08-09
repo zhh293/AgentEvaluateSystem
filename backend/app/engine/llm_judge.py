@@ -61,19 +61,20 @@ class JudgeTransport(Protocol):
 
 
 class HTTPJudgeTransport:
-    def __init__(self, model: str, api_key: str, api_base: str, provider: str = "openai", timeout: int = 60):
+    def __init__(self, model: str, api_key: str, api_base: str, provider: str = "openai", timeout: int = 60, max_tokens: int = 800):
         self.model, self.api_key, self.api_base, self.provider, self.timeout = model, api_key, api_base.rstrip("/"), provider, timeout
+        self.max_tokens = max_tokens
 
     async def complete(self, prompt: str) -> str:
         headers = {"Content-Type": "application/json"}
         if self.provider == "anthropic":
             headers.update({"x-api-key": self.api_key, "anthropic-version": "2023-06-01"})
             url = self.api_base + "/messages"
-            body = {"model": self.model, "max_tokens": 800, "temperature": 0, "messages": [{"role": "user", "content": prompt}]}
+            body = {"model": self.model, "max_tokens": self.max_tokens, "temperature": 0, "messages": [{"role": "user", "content": prompt}]}
         else:
             headers["Authorization"] = f"Bearer {self.api_key}"
             url = self.api_base + "/chat/completions"
-            body = {"model": self.model, "temperature": 0, "max_tokens": 800, "response_format": {"type": "json_object"}, "messages": [{"role": "user", "content": prompt}]}
+            body = {"model": self.model, "temperature": 0, "max_tokens": self.max_tokens, "response_format": {"type": "json_object"}, "messages": [{"role": "user", "content": prompt}]}
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(url, headers=headers, json=body)
             response.raise_for_status()

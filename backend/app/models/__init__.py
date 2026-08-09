@@ -9,6 +9,9 @@ from app.models.skill_evaluation import SkillEvaluation
 from app.models.self_eval_loop import SelfEvalLoopRun
 from app.models.quality_gate import QualityGate
 from app.models.audit import AuditLog
+from app.models.artifact import Artifact, VerifiedManifest
+from app.models.capability import Capability, CapabilityCatalog
+from app.models.case_set import CaseDefinition, CaseSet, EvaluationCase, ExecutionAttempt
 
 __all__ = [
     "Base",
@@ -22,4 +25,12 @@ __all__ = [
     "SelfEvalLoopRun",
     "QualityGate",
     "AuditLog",
+    "Artifact",
+    "VerifiedManifest",
+    "Capability",
+    "CapabilityCatalog",
+    "CaseSet",
+    "CaseDefinition",
+    "EvaluationCase",
+    "ExecutionAttempt",
 ]

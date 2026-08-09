@@ -9,6 +9,7 @@ class Evaluation(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     submission_id = Column(UUID(as_uuid=True), ForeignKey("submissions.id"), nullable=True)
+    case_set_id = Column(UUID(as_uuid=True), ForeignKey("case_sets.id"), nullable=True)
     status = Column(String(30), nullable=False, default="queued")
     agent_type = Column(String(50), nullable=False)
     horizon = Column(String(10), nullable=False)

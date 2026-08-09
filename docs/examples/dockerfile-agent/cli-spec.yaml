@@ -1,0 +1,9 @@
+schema_version: 1
+type: cli
+executable: [python, /app/main.py]
+commands:
+  - id: run
+    args: []
+    description: 从标准输入读取任务并输出结果
+    input: { mode: stdin, content_type: application/json }
+    output: { content_type: application/json }

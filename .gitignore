@@ -55,5 +55,11 @@ coverage/
 deploy/kubernetes/secrets/
 *.kubeconfig
 
+# Claude Code
+.claude/
+
+# TypeScript
+*.tsbuildinfo
+
 # Sandbox artifacts
 sandbox/tmp/

@@ -95,8 +95,9 @@ cd deploy/docker-compose && docker compose up -d
 
 - `docs/` — 设计文档
 - `backend/app/api/` — API 路由层（薄层，不含业务逻辑）
-- `backend/app/services/` — 业务逻辑层
-- `backend/app/engine/` — 评测引擎（核心评测逻辑，无副作用）
+- `backend/app/services/` — 业务逻辑层（config_generator, model_connectivity, agent_type_identifier, api_key_vault）
+- `backend/app/engine/` — 评测引擎（核心评测逻辑，无副作用；含 builtin_tools 系统内置工具库）
+- `backend/app/infrastructure/` — 基础设施层（database session, minio client）
 - `backend/app/models/` — SQLAlchemy ORM 模型
 - `backend/app/schemas/` — Pydantic 请求/响应模型
 - `backend/app/worker/` — Celery 异步任务
@@ -112,3 +113,20 @@ cd deploy/docker-compose && docker compose up -d
 - 所有评测引擎函数为纯函数，输入数据 → 输出结果，不依赖外部状态
 - 沙箱操作必须带超时控制，默认 300 秒，硬超时强制终止
 - 日志使用结构化 JSON 格式（对接 ELK/Loki）
+
+## 开发进度
+
+**开发文档**：`docs/DEVELOPMENT.md`（按 Session 推进）
+
+| Session | 状态 | 产出 |
+|---------|------|------|
+| 0.1 项目脚手架 | ✅ | backend/ (FastAPI), frontend/ (Vite+React+TS+Tailwind), sandbox/, deploy/ |
+| 0.2 配置系统与目录规范 | ✅ | config.py, logging.py, exceptions.py, error_handlers.py, .env.example |
+| 0.3 前后端联调验证 | ⏭️ 跳过 | — |
+| 1.1 Docker Compose 开发环境 | ✅ | docker-compose.yml (5 服务), .env.dev |
+| 1.2 数据库模型 & Alembic | ✅ | 9 张表 ORM 模型, Alembic 迁移初始化 |
+| 1.3 Pydantic Schema 定义 | ✅ | request/response/internal 三层 15 个 Schema 文件 |
+| 2.1 源码包上传 + 配置接收 | ✅ | SubmissionConfigRequest, Submission API, MinIO adapter, API Key Vault, database session |
+| 2.2 系统自动生成 agent.config.yaml | ✅ | ConfigGenerator, BuiltinTool 库 (7 tools), YAML 自动生成并上传 MinIO |
+| 2.3 模型连通性校验 + AI 类型识别 | ✅ | ModelConnectivityChecker, AgentTypeIdentifier, 连通性前置校验 + 类型自动识别 |
+| 2.4 静态安全扫描 + 依赖审计 | ⬜ 下一步 | — |

@@ -617,8 +617,8 @@ safety==3.x                 # 依赖漏洞扫描
                            ▼
 ┌──────────────────────────────────────────────────────────┐
 │  Phase 2: 隔离构建 (异步，独立 Build Worker)                  │
-│  Dockerfile-first → 无网络构建 → 镜像扫描/SBOM → 推送摘要引用  │
-│  无 Dockerfile 的旧 agent.py 包由平台生成兼容 Dockerfile      │
+│  Compose-first → 逐服务隔离构建 → 镜像扫描/SBOM → 镜像映射     │
+│  Dockerfile 保留为单服务模式；Manifest 对所有新提交强制要求     │
 └──────────────────────────┬───────────────────────────────┘
                            ▼
 ┌──────────────────────────────────────────────────────────┐
@@ -666,36 +666,40 @@ safety==3.x                 # 依赖漏洞扫描
 
 ```text
 submission.zip (或 tar.gz / tgz, max 50MB)
-├── Dockerfile                   # 首选：提交者定义依赖与启动方式
-├── agent-eval.yaml              # 首选：平台构建/运行契约
-├── src/                         # 任意语言、任意多文件结构
+├── docker-compose.yml           # 推荐：多服务部署拓扑
+├── agent-eval.yaml              # 必须：平台部署/调用/生命周期契约
+├── agent/Dockerfile             # 本地服务镜像构建方式
+├── agent/src/                   # 任意语言、任意多文件结构
 ├── requirements.txt / pyproject.toml  # 可选：同时参与源码依赖审计
-├── tools/ / skills/ / prompts/  # 可选
-└── agent.py                     # 仅旧版兼容包需要
+└── tools/ / skills/ / prompts/  # 可选
 ```
 
 #### 6.1.2 agent-eval.yaml 运行契约
 
 ```yaml
 schema_version: 1
-build:
-  dockerfile: Dockerfile
-  context: .
+deployment:
+  type: compose
+  file: docker-compose.yml
+  entry_service: agent
 runtime:
-  protocol: stdio              # stdio | http
+  protocol: http
+  port: 8080
+  healthcheck: /health
+  invoke: /v1/evaluations/run
+  state_scope: evaluation
   timeout_seconds: 300
-  # HTTP 模式额外声明 port / healthcheck / invoke
 security:
   network: none                # none | restricted
   allowed_domains: []
 ```
 
-业务表单仍由系统生成内部 `agent.config.yaml`，用于 Rubric、工具、模型和评测约束；它不再承担项目启动职责。Dockerfile 是构建契约，`agent-eval.yaml` 是调用契约，源码压缩包是不可变审计原件。
+业务表单仍由系统生成内部 `agent.config.yaml`，用于 Rubric、工具、模型和评测约束；它不承担项目启动职责。Compose 是部署契约，Dockerfile 是构建契约，`agent-eval.yaml` 是平台入口与调用契约，源码压缩包是不可变审计原件。AI 生成及隐藏 Rubric 只进入 Evaluator，绝不进入被测 Agent 容器。
 
 #### 6.1.3 校验流程
 
 ```
-提交包 → 安全解压 → Dockerfile + agent-eval.yaml（或旧版 agent.py）
+提交包 → 安全解压 → 必需 agent-eval.yaml + Compose（或单服务 Dockerfile）
                 │
                 ├─ 依赖声明校验
                 ├─ Agent 类型识别: short_horizon / long_horizon

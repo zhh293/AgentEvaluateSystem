@@ -31,6 +31,22 @@ def dimension_score(payload: dict[str, Any]) -> float | None:
     return round(mean(values), 2) if values else None
 
 
+def build_invocation_envelope(evaluation_id: str, raw_task: dict[str, Any], config: dict[str, Any], timeout: int) -> dict[str, Any]:
+    """Project only public task constraints into the untrusted Agent request."""
+    return {
+        "protocol_version": "1.0",
+        "evaluation_id": evaluation_id,
+        "case_id": str(raw_task.get("id", evaluation_id)),
+        "task": raw_task,
+        "guidance": {
+            "language": config.get("language"),
+            "output_format": config.get("output_format"),
+            "max_output_chars": config.get("max_output_chars"),
+        },
+        "runtime": {"deadline_seconds": timeout, "trace_level": "tool_calls"},
+    }
+
+
 async def execute_submission(submission_id: str, evaluation_id: str) -> dict[str, Any]:
     async with async_session_factory() as db:
         submission = await db.get(Submission, submission_id)
@@ -43,10 +59,17 @@ async def execute_submission(submission_id: str, evaluation_id: str) -> dict[str
     if not image_ref:
         raise RuntimeError("Submission 镜像尚未构建完成")
 
-    task = config.get("evaluation_task") or {
+    raw_task = config.get("evaluation_task") or {
         "id": evaluation_id,
         "input": config.get("evaluation_input", config.get("description", "")),
     }
+    # The invocation protocol deliberately excludes generated/private Rubrics.
+    # Rubrics stay in platform configuration and are consumed by evaluators
+    # after the untrusted Agent returns. Only explicit user-visible constraints
+    # are projected into `guidance`.
+    task = build_invocation_envelope(
+        evaluation_id, raw_task, config, contract_from_dict(config["package_contract"]).runtime.timeout_seconds
+    )
     api_key = await APIKeyVault.retrieve_and_purge(evaluation_id)
     if not api_key:
         raise RuntimeError("运行时模型凭据不存在或已过期，请重新提交 Agent")
@@ -75,6 +98,7 @@ async def execute_submission(submission_id: str, evaluation_id: str) -> dict[str
         task=task,
         environment=environment,
         risk_level=risk_level,
+        service_images=dict(config.get("service_images") or {}),
     )
     result = execution.result
     raw_trace = execution.trace
@@ -90,7 +114,7 @@ async def execute_submission(submission_id: str, evaluation_id: str) -> dict[str
         result_metrics = evaluate_long_horizon(output if isinstance(output, dict) else {"output": output}, expected, result)
         trajectory_metrics = evaluate_long_horizon_trajectory(trajectory, declared_tools)
     else:
-        result_metrics = evaluate_short_horizon(answer, config.get("ground_truth"), str(task.get("input", "")), config)
+        result_metrics = evaluate_short_horizon(answer, config.get("ground_truth"), str(raw_task.get("input", "")), config)
         trajectory_metrics = evaluate_short_horizon_trajectory(trajectory, declared_tools, config.get("expected_tool_chain"))
     stats = compute_trajectory_stats(trajectory)
     stats["minimum_steps"] = config.get("minimum_steps", stats.get("total_steps", 0))

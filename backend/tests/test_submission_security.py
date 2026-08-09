@@ -7,7 +7,7 @@ from app.services.agent_type_identifier import TypeIdentificationResult
 from app.services.model_connectivity import ConnectivityResult
 from app.services.security_service import SecurityScanResult, ScanStatus
 from app.services.submission_service import submission_service
-from app.services.agent_package import AgentPackageContract, BuildContract, RuntimeContract, SecurityContract
+from app.services.agent_package import AgentPackageContract, BuildContract, DeploymentContract, RuntimeContract, SecurityContract
 
 
 def _config() -> SubmissionConfigRequest:
@@ -30,9 +30,11 @@ async def test_pipeline_never_persists_llm_api_key():
     )
     contract = AgentPackageContract(
         schema_version=1,
-        build=BuildContract(mode="legacy", dockerfile="Dockerfile"),
+        deployment=DeploymentContract(type="image", entry_service="agent"),
+        build=BuildContract(mode="dockerfile", dockerfile="Dockerfile"),
         runtime=RuntimeContract(),
         security=SecurityContract(),
+        manifest_path="agent-eval.yaml",
     )
 
     with (

@@ -50,6 +50,9 @@ async def _build_submission(submission_id: str) -> dict:
             submission = await db.get(Submission, submission_id)
             submission.image_ref = result.image_ref
             submission.image_digest = result.image_digest
+            durable_config = dict(submission.config or {})
+            durable_config["service_images"] = result.service_images
+            submission.config = durable_config
             submission.build_log_path = log_path
             submission.sbom_path = sbom_path
             submission.image_scan_path = scan_path

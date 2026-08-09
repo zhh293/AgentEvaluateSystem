@@ -7,7 +7,7 @@
 ## 能力概览
 
 - **安全接入**：ZIP/TAR.GZ 校验、防路径穿越、静态代码扫描、真实依赖漏洞审计、模型端点连通性检查。
-- **隔离执行**：Dockerfile-first 构建用户镜像，运行时强制禁网/白名单代理、只读根文件系统、非 root、丢弃 capabilities，并限制 CPU、内存、PID 和执行时间。
+- **隔离执行**：Compose-first 部署完整 Agent 工程，Dockerfile 兼容单服务项目；平台解析并重建受控拓扑，绝不直接执行用户 Compose。
 - **四维评测**：结果正确性、轨迹质量、Token/延迟/成本、安全与数据泄露风险。
 - **Rubric 系统**：内置 Rubric、配置推导、场景模板、AI 生成、Case 解析和健康度监控。
 - **AI Judge**：严格 JSON 输出、真实 Span 证据校验、双 Judge、仲裁和人工复核标记。
@@ -161,27 +161,33 @@ npm run dev
 
 ## Agent 包约定
 
-支持 `.zip`、`.tar.gz` 和 `.tgz`。源码包是不可变审计原件，执行采用 **Dockerfile-first**：提交者负责封装语言、依赖和启动方式，平台负责隔离构建、镜像策略检查以及按统一协议调用。
+支持 `.zip`、`.tar.gz` 和 `.tgz`。源码包是不可变审计原件，执行采用 **Compose-first、Dockerfile-compatible、Manifest-required、Protocol-standardized**：Compose 描述部署拓扑，Dockerfile 描述镜像构建，`agent-eval.yaml` 描述入口服务、生命周期和调用协议。
 
 推荐目录如下：
 
 ```text
 my-agent/
-├── Dockerfile
+├── docker-compose.yml     # 推荐：多服务部署拓扑
 ├── agent-eval.yaml
-├── src/                   # 任意语言、任意多文件结构
-└── requirements.txt       # 可选；仍会参与源码依赖审计
+├── agent/Dockerfile
+├── agent/src/             # 任意语言、任意多文件结构
+└── mysql/init.sql         # 可选依赖初始化文件
 ```
 
 `agent-eval.yaml` 是平台运行契约：
 
 ```yaml
 schema_version: 1
-build:
-  dockerfile: Dockerfile
-  context: .
+deployment:
+  type: compose
+  file: docker-compose.yml
+  entry_service: agent
 runtime:
-  protocol: stdio          # stdio 或 http
+  protocol: http
+  port: 8080
+  healthcheck: /health
+  invoke: /v1/evaluations/run
+  state_scope: evaluation
   timeout_seconds: 300
 security:
   network: none            # none 或 restricted
@@ -192,10 +198,7 @@ security:
 
 `http` 模式必须额外声明 `port`、`healthcheck` 和 `invoke`。平台先调用健康检查，再把任务 JSON POST 到调用接口；响应格式为 `{"result": {...}, "trace": {...}}`。HTTP 容器连接到平台创建的 internal 网络，不直接暴露宿主机端口。
 
-完整的可运行示例见 [`docs/examples/dockerfile-agent`](docs/examples/dockerfile-agent)。镜像运行时强制使用 UID/GID `65532:65532`，因此 Dockerfile 必须确保应用文件可由该用户读取；临时文件只能写入 `/tmp`，协议结果写到标准输出。
-完整的规范性协议与安全语义见 [`docs/DOCKERFILE_AGENT_PROTOCOL.md`](docs/DOCKERFILE_AGENT_PROTOCOL.md)。
-
-为了兼容已有使用方式，无 Dockerfile 的包仍可在项目根目录提供 `agent.py`。平台会生成兼容 Dockerfile，随后进入同一套镜像构建与运行流程；这不是独立的旧执行引擎。
+完整的多服务示例见 [`docs/examples/compose-agent`](docs/examples/compose-agent)，单容器示例见 [`docs/examples/dockerfile-agent`](docs/examples/dockerfile-agent)。规范性协议与安全语义见 [`docs/AGENT_PROJECT_PROTOCOL.md`](docs/AGENT_PROJECT_PROTOCOL.md)。所有新提交都必须提供 Manifest；平台不猜测启动命令，也不再生成旧 `agent.py` 适配器。
 
 升级迁移前已经存在、但没有镜像元数据的历史 Submission 会标记为 `reupload_required`。这是有意的安全迁移：平台不会在没有新构建契约和运行时凭据的情况下静默执行旧产物，重新上传原 ZIP 即可进入兼容构建流程。
 
@@ -366,7 +369,8 @@ kubectl apply -f deploy/kubernetes/
 ## 安全边界
 
 - 上传包限制类型、压缩前后大小，并拒绝路径穿越、符号链接、特殊文件、`.env`、私钥和常见凭据文件。
-- Dockerfile 在专用 Build Worker 上构建；生产环境若未配置独立 `AGENT_BUILDER_DOCKER_HOST` 会拒绝启动，禁止把构建职责交给 API 或运行时节点。
+- Compose 中的本地 Dockerfile 在专用 Build Worker 上逐服务构建；生产环境若未配置独立 `AGENT_BUILDER_DOCKER_HOST` 会拒绝启动。
+- 用户 Compose 只作为部署意图解析：禁止特权、宿主网络/进程、端口映射、设备和绑定挂载；命名卷被改写为单次评测临时卷并在结束后删除。
 - 构建默认 `network=none`，拒绝远程 `ADD`、Docker Socket 和特权参数；构建过程受时间、上下文大小和日志大小限制。
 - API Key 不进入数据库、日志、Trace 或报告；凭据加密、限时且一次性读取。
 - 非管理员只能访问自己的 Submission、Evaluation 和 Trace；管理接口使用 RBAC。

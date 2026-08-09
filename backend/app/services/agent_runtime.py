@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -35,6 +36,7 @@ class AgentImageRuntime:
         task: dict[str, Any],
         environment: dict[str, str],
         risk_level: str = "low",
+        service_images: dict[str, str] | None = None,
     ) -> AgentExecution:
         timeout = contract.runtime.timeout_seconds
         network = None
@@ -59,10 +61,21 @@ class AgentImageRuntime:
                 except Exception:
                     pass
             raise
+        containers: list[Any] = []
+        volumes: list[Any] = []
         try:
-            container = await asyncio.to_thread(
-                self._create, evaluation_id, image, contract, environment, network.name if network else "none", risk_level
-            )
+            if contract.deployment.type == "compose":
+                if network is None:
+                    raise RuntimeError("Compose 部署必须使用独立内部网络")
+                containers, volumes = await asyncio.to_thread(
+                    self._create_compose, evaluation_id, contract, service_images or {}, environment, network.name, risk_level
+                )
+                container = next(c for c in containers if c.labels.get("agenteval.entry_service") == "true")
+            else:
+                container = await asyncio.to_thread(
+                    self._create, evaluation_id, image, contract, environment, network.name if network else "none", risk_level
+                )
+                containers = [container]
         except Exception:
             if network is not None:
                 if proxy_container is not None:
@@ -81,7 +94,13 @@ class AgentImageRuntime:
                 return await self._run_stdio(container, contract, task, timeout)
             return await self._run_http(container, contract, task, timeout, network.name)
         finally:
-            await asyncio.to_thread(self._destroy, container)
+            for managed in reversed(containers):
+                await asyncio.to_thread(self._destroy, managed)
+            for volume in volumes:
+                try:
+                    await asyncio.to_thread(volume.remove, force=True)
+                except Exception:
+                    pass
             if network is not None:
                 if proxy_container is not None:
                     try:
@@ -93,6 +112,112 @@ class AgentImageRuntime:
                 except Exception:
                     pass
             SANDBOX_ACTIVE.dec()
+
+    def _create_compose(self, evaluation_id: str, contract: AgentPackageContract, service_images: dict[str, str], environment: dict[str, str], network_name: str, risk_level: str):
+        """Materialize the validated topology without executing user Compose."""
+        volumes: dict[str, Any] = {}
+        for service in contract.deployment.services:
+            for source, _ in service.volumes:
+                if source not in volumes:
+                    volumes[source] = self.client.volumes.create(
+                        name=f"agenteval-{evaluation_id}-{source}",
+                        labels={"agenteval.managed": "true", "agenteval.evaluation_id": evaluation_id},
+                    )
+        ordered: list[Any] = []
+        try:
+            pending = {service.name: service for service in contract.deployment.services}
+            created_names: set[str] = set()
+            while pending:
+                ready = [service for service in pending.values() if set(service.depends_on).issubset(created_names)]
+                if not ready:
+                    raise RuntimeError("Compose 服务依赖无法解析")
+                for service in ready:
+                    service_environment = dict(service.environment)
+                    if service.name == contract.deployment.entry_service:
+                        service_environment.update(environment)
+                    image = service_images.get(service.name) or service.image
+                    if not image:
+                        raise RuntimeError(f"Compose 服务 {service.name} 没有已构建镜像")
+                    is_entry = service.name == contract.deployment.entry_service
+                    mounts = {volumes[source].name: {"bind": target, "mode": "rw"} for source, target in service.volumes}
+                    container = self._create_service(
+                        evaluation_id, service.name, image, service.command, service.entrypoint,
+                        service_environment, mounts, network_name, risk_level, is_entry, contract, service.healthcheck,
+                    )
+                    container.start()
+                    ordered.append(container)
+                    if service.healthcheck:
+                        self._wait_healthy(container, contract.runtime.startup_timeout_seconds)
+                    created_names.add(service.name)
+                    del pending[service.name]
+            return ordered, list(volumes.values())
+        except Exception:
+            for container in reversed(ordered):
+                self._destroy(container)
+            for volume in volumes.values():
+                try:
+                    volume.remove(force=True)
+                except Exception:
+                    pass
+            raise
+
+    def _create_service(self, evaluation_id: str, service_name: str, image: str, command: list[str] | None,
+                        entrypoint: list[str] | None, environment: dict[str, str], volumes: dict[str, Any],
+                        network_name: str, risk_level: str, is_entry: bool, contract: AgentPackageContract,
+                        healthcheck: tuple[str, ...] | None):
+        self._ensure_image(image)
+        env = {"HOME": "/tmp", "TMPDIR": "/tmp", **environment}
+        self._apply_egress_environment(env, contract)
+        runtime_name = {"low": settings.AGENT_RUNTIME_LOW, "medium": settings.AGENT_RUNTIME_MEDIUM,
+                        "high": settings.AGENT_RUNTIME_HIGH}.get(risk_level.lower(), "")
+        options = {"runtime": runtime_name} if runtime_name else {}
+        return self.client.containers.create(
+            image=image, name=f"agenteval-{evaluation_id}-{service_name}", command=command,
+            entrypoint=entrypoint, detach=True, environment=env, network=network_name,
+            hostname=service_name, volumes=volumes, read_only=is_entry,
+            mem_limit=settings.AGENT_RUNTIME_MEMORY_BYTES, nano_cpus=settings.AGENT_RUNTIME_NANO_CPUS,
+            pids_limit=settings.AGENT_RUNTIME_PIDS_LIMIT, cap_drop=["ALL"],
+            security_opt=["no-new-privileges:true"], user=settings.AGENT_RUNTIME_USER if is_entry else None,
+            tmpfs={"/tmp": "rw,noexec,nosuid,size=64m"},
+            log_config={"type": "local", "config": {"max-size": "10m", "max-file": "1"}},
+            healthcheck={"test": ["CMD", *healthcheck], "interval": 2_000_000_000,
+                         "timeout": 2_000_000_000, "retries": 30} if healthcheck else None,
+            labels={"agenteval.managed": "true", "agenteval.evaluation_id": evaluation_id,
+                    "agenteval.service": service_name, "agenteval.entry_service": str(is_entry).lower()}, **options,
+        )
+
+    @staticmethod
+    def _wait_healthy(container: Any, timeout: int) -> None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            container.reload()
+            status = ((container.attrs.get("State") or {}).get("Health") or {}).get("Status")
+            if status == "healthy":
+                return
+            if status == "unhealthy" or container.status in {"dead", "exited"}:
+                raise RuntimeError(f"依赖服务 {container.name} 健康检查失败")
+            time.sleep(0.5)
+        raise TimeoutError(f"依赖服务 {container.name} 未在 {timeout} 秒内就绪")
+
+    def _ensure_image(self, image: str) -> None:
+        try:
+            self.client.images.get(image)
+        except Exception:
+            auth = None
+            if settings.AGENT_REGISTRY_USERNAME and settings.AGENT_REGISTRY_PASSWORD:
+                auth = {"username": settings.AGENT_REGISTRY_USERNAME, "password": settings.AGENT_REGISTRY_PASSWORD}
+            self.client.images.pull(image, auth_config=auth)
+
+    def _apply_egress_environment(self, env: dict[str, str], contract: AgentPackageContract) -> None:
+        if contract.security.network != "restricted" or not contract.security.allowed_domains:
+            return
+        if not settings.AGENT_EGRESS_PROXY:
+            raise RuntimeError("声明 allowed_domains 时必须配置平台出口代理")
+        globally_allowed = {item.strip().lower() for item in settings.AGENT_EGRESS_ALLOWED_DOMAINS.split(",") if item.strip()}
+        requested = {item.lower() for item in contract.security.allowed_domains}
+        if not requested.issubset(globally_allowed):
+            raise RuntimeError(f"域名未被平台出口策略允许: {', '.join(sorted(requested - globally_allowed))}")
+        env.update({"HTTP_PROXY": settings.AGENT_EGRESS_PROXY, "HTTPS_PROXY": settings.AGENT_EGRESS_PROXY})
 
     def _create(self, evaluation_id: str, image: str, contract: AgentPackageContract, environment: dict[str, str], network_mode: str, risk_level: str):
         try:
@@ -228,7 +353,9 @@ class AgentImageRuntime:
         return AgentExecution(result=result, trace=trace, stdout=stdout)
 
     async def _run_http(self, container: Any, contract: AgentPackageContract, task: dict[str, Any], timeout: int, network_name: str) -> AgentExecution:
-        await asyncio.to_thread(container.start)
+        await asyncio.to_thread(container.reload)
+        if container.status != "running":
+            await asyncio.to_thread(container.start)
         try:
             self.client.images.get(settings.AGENT_HTTP_INVOKER_IMAGE)
         except Exception:

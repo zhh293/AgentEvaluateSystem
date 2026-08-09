@@ -1,0 +1,25 @@
+services:
+  agent:
+    build:
+      context: ./agent
+      dockerfile: Dockerfile
+    depends_on:
+      - mysql
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_DATABASE: agent
+      MYSQL_USER: agent
+      MYSQL_PASSWORD: local-only
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: agent
+      MYSQL_USER: agent
+      MYSQL_PASSWORD: local-only
+      MYSQL_ROOT_PASSWORD: local-root-only
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+volumes:
+  mysql-data: {}

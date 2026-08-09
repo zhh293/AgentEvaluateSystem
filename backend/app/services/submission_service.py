@@ -62,7 +62,12 @@ class SubmissionService:
                 )
             if package_contract.build.mode == "dockerfile":
                 project_root = resolve_project_root(extract_dir, package_contract)
-                validate_dockerfile(project_root / package_contract.build.dockerfile)
+                validate_dockerfile(project_root / package_contract.build.context / package_contract.build.dockerfile)
+            elif package_contract.build.mode == "compose":
+                project_root = resolve_project_root(extract_dir, package_contract)
+                for service in package_contract.deployment.services:
+                    if service.dockerfile:
+                        validate_dockerfile(project_root / str(service.context or ".") / service.dockerfile)
             requirements_txt = _read_requirements(extract_dir)
             scan_result = security_scanner.full_audit(extract_dir, requirements_txt)
 
@@ -122,7 +127,10 @@ class SubmissionService:
             source_package_hash="",
             status=submission_status,
             build_mode=package_contract.build.mode,
-            dockerfile_path=package_contract.build.dockerfile,
+            deployment_type=package_contract.deployment.type,
+            compose_file=package_contract.deployment.compose_file,
+            entry_service=package_contract.deployment.entry_service,
+            dockerfile_path=package_contract.build.dockerfile or package_contract.deployment.compose_file,
             runtime_protocol=package_contract.runtime.protocol,
             build_status="queued",
         )

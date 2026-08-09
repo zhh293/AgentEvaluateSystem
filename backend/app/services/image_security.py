@@ -17,15 +17,16 @@ class ImageSecurityResult:
     sbom: dict[str, Any]
 
 
-def inspect_and_scan_image(client: Any, image_ref: str) -> ImageSecurityResult:
+def inspect_and_scan_image(client: Any, image_ref: str, allowed_volumes: set[str] | None = None) -> ImageSecurityResult:
     image = client.images.get(image_ref)
     image.reload()
     size = int(image.attrs.get("Size", 0))
     if size > settings.AGENT_IMAGE_MAX_BYTES:
         raise RuntimeError(f"镜像大小 {size} 超过限制 {settings.AGENT_IMAGE_MAX_BYTES}")
     declared_volumes = image.attrs.get("Config", {}).get("Volumes") or {}
-    if declared_volumes:
-        raise RuntimeError(f"Agent 镜像不能声明 VOLUME（会绕过只读根文件系统）: {', '.join(declared_volumes)}")
+    unexpected_volumes = set(declared_volumes) - set(allowed_volumes or ())
+    if unexpected_volumes:
+        raise RuntimeError(f"镜像声明了 Manifest 未授权的 VOLUME: {', '.join(sorted(unexpected_volumes))}")
     base_report: dict[str, Any] = {
         "scanner": "docker-policy",
         "image_id": image.id,

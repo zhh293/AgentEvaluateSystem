@@ -20,6 +20,8 @@ class SubmissionResponse(BaseModel):
     status: str
     status_message: str | None = None
     build_mode: str
+    deployment_type: str
+    entry_service: str
     build_status: str
     runtime_protocol: str
     image_digest: str | None = None
@@ -38,6 +40,9 @@ class SubmissionStatusResponse(BaseModel):
     risk_level: str
     status_message: str | None = None
     build_mode: str
+    deployment_type: str
+    compose_file: str | None = None
+    entry_service: str
     build_status: str
     runtime_protocol: str
     image_ref: str | None = None

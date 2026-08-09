@@ -1,4 +1,4 @@
-"""Policy-controlled image building for untrusted Agent packages."""
+"""Policy-controlled image builds for single-image and Compose deployments."""
 
 from __future__ import annotations
 
@@ -17,7 +17,6 @@ from app.services.image_security import inspect_and_scan_image
 
 
 _FORBIDDEN_DOCKERFILE = (
-    (re.compile(r"^\s*FROM\s+[^\s]+\s+AS\s+.*\bFROM\s+", re.I), "同一行多阶段 FROM"),
     (re.compile(r"^\s*ADD\b.*https?://", re.I), "远程 ADD"),
     (re.compile(r"^\s*(RUN|CMD|ENTRYPOINT).*--privileged", re.I), "特权参数"),
     (re.compile(r"/var/run/docker\.sock", re.I), "Docker Socket"),
@@ -32,6 +31,7 @@ class ImageBuildResult:
     build_log: str
     scan_report: dict[str, Any]
     sbom: dict[str, Any]
+    service_images: dict[str, str]
 
 
 class ImageBuildError(RuntimeError):
@@ -41,10 +41,10 @@ class ImageBuildError(RuntimeError):
 
 
 class ImageBuilder:
-    """Build through a separately configured Docker-compatible builder.
+    """Build local services on the isolated builder daemon.
 
-    Production must point ``AGENT_BUILDER_DOCKER_HOST`` at a dedicated rootless
-    builder. Falling back to the runtime daemon is allowed only in development.
+    External Compose images are retained by immutable user declaration. Local
+    build services are built, scanned and optionally pushed independently.
     """
 
     def __init__(self, client: Any | None = None):
@@ -61,58 +61,69 @@ class ImageBuilder:
                 client = docker.from_env()
         self.client = client
 
-    async def build(
-        self,
-        submission_id: str,
-        source_root: Path,
-        contract: AgentPackageContract,
-        source_hash: str,
-    ) -> ImageBuildResult:
+    async def build(self, submission_id: str, source_root: Path, contract: AgentPackageContract, source_hash: str) -> ImageBuildResult:
         project_root = resolve_project_root(source_root, contract)
-        dockerfile = project_root / contract.build.dockerfile
-        if contract.build.mode == "legacy":
-            dockerfile = project_root / ".agenteval.Dockerfile"
-            (project_root / ".agenteval_legacy_stdio.py").write_text(_legacy_stdio_adapter(), encoding="utf-8")
-            dockerfile.write_text(_legacy_dockerfile(), encoding="utf-8")
-        validate_dockerfile(dockerfile)
-        context = (project_root / contract.build.context).resolve()
-        if not context.is_dir() or (context != project_root.resolve() and project_root.resolve() not in context.parents):
-            raise ValidationException("Docker 构建上下文不存在或越出项目目录")
-        build_fingerprint = hashlib.sha256(
+        fingerprint = hashlib.sha256(
             f"{source_hash}:{json.dumps(contract.as_dict(), sort_keys=True, separators=(',', ':'))}".encode()
         ).hexdigest()
-        tag = f"{settings.AGENT_IMAGE_REPOSITORY}:{build_fingerprint[:24]}"
 
         def do_build() -> ImageBuildResult:
-            image, logs = self.client.images.build(
-                path=str(context),
-                dockerfile=str(dockerfile.relative_to(context)),
-                tag=tag,
-                rm=True,
-                forcerm=True,
-                pull=settings.AGENT_BUILD_PULL_BASE_IMAGES,
-                network_mode=settings.AGENT_BUILD_NETWORK_MODE,
-                labels={"agenteval.submission_id": submission_id, "agenteval.source_sha256": source_hash, "agenteval.build_fingerprint": build_fingerprint},
+            if contract.deployment.type == "compose":
+                specs = [(s.name, s.context, s.dockerfile, s.image, {target for _, target in s.volumes}) for s in contract.deployment.services]
+            else:
+                specs = [(contract.deployment.entry_service, contract.build.context, contract.build.dockerfile, None, set())]
+            service_images: dict[str, str] = {}
+            reports: dict[str, Any] = {}
+            sboms: dict[str, Any] = {}
+            log_parts: list[str] = []
+            entry_id = ""
+            entry_digest = ""
+            for index, (name, context_name, dockerfile_name, external_image, allowed_volumes) in enumerate(specs):
+                if external_image and not dockerfile_name:
+                    try:
+                        image = self.client.images.get(external_image)
+                    except Exception:
+                        image = self.client.images.pull(external_image)
+                    image.reload()
+                    immutable = _immutable_ref(external_image, image)
+                    security = inspect_and_scan_image(self.client, immutable, allowed_volumes)
+                    service_images[name] = immutable
+                    reports[name] = security.report
+                    sboms[name] = security.sbom
+                    log_parts.append(f"\n===== external service: {name} ({immutable}) =====\n")
+                    continue
+                context = (project_root / str(context_name or ".")).resolve()
+                dockerfile = context / str(dockerfile_name or "Dockerfile")
+                validate_dockerfile(dockerfile)
+                tag = f"{settings.AGENT_IMAGE_REPOSITORY}:{fingerprint[:16]}-{index}-{name}"
+                image, logs = self.client.images.build(
+                    path=str(context), dockerfile=str(dockerfile.relative_to(context)), tag=tag,
+                    rm=True, forcerm=True, pull=settings.AGENT_BUILD_PULL_BASE_IMAGES,
+                    network_mode=settings.AGENT_BUILD_NETWORK_MODE,
+                    labels={"agenteval.submission_id": submission_id, "agenteval.service": name,
+                            "agenteval.source_sha256": source_hash, "agenteval.build_fingerprint": fingerprint},
+                )
+                log_parts.append(f"\n===== service: {name} =====\n")
+                log_parts.extend(event.get("stream", event.get("error", "")) for event in logs)
+                image.reload()
+                digest = _image_digest(image)
+                security = inspect_and_scan_image(self.client, tag, allowed_volumes)
+                published = self._publish(tag, digest) if settings.AGENT_IMAGE_PUSH else tag
+                service_images[name] = published
+                reports[name] = security.report
+                sboms[name] = security.sbom
+                if name == contract.deployment.entry_service:
+                    entry_id, entry_digest = image.id, digest
+            entry_ref = service_images.get(contract.deployment.entry_service)
+            if not entry_ref:
+                raise RuntimeError("入口服务没有可运行镜像")
+            if not entry_digest:
+                entry_digest = hashlib.sha256(entry_ref.encode()).hexdigest()
+                entry_id = entry_ref
+            return ImageBuildResult(
+                entry_ref, entry_id, entry_digest,
+                "".join(log_parts)[-settings.AGENT_BUILD_LOG_MAX_CHARS:], reports, sboms, service_images,
             )
-            text = "".join(item.get("stream", item.get("error", "")) for item in logs)
-            image.reload()
-            digest = _image_digest(image)
-            security = inspect_and_scan_image(self.client, tag)
-            published_ref = tag
-            if settings.AGENT_IMAGE_PUSH:
-                repository, image_tag = tag.rsplit(":", 1)
-                auth_config = None
-                if settings.AGENT_REGISTRY_USERNAME and settings.AGENT_REGISTRY_PASSWORD:
-                    auth_config = {"username": settings.AGENT_REGISTRY_USERNAME, "password": settings.AGENT_REGISTRY_PASSWORD}
-                push_events = self.client.images.push(repository, tag=image_tag, stream=True, decode=True, auth_config=auth_config)
-                for event in push_events:
-                    if event.get("error"):
-                        raise RuntimeError(f"镜像推送失败: {event['error']}")
-                    aux_digest = (event.get("aux") or {}).get("Digest", "")
-                    if aux_digest.startswith("sha256:"):
-                        digest = aux_digest.removeprefix("sha256:")
-                published_ref = f"{repository}@sha256:{digest}"
-            return ImageBuildResult(published_ref, image.id, digest, text[-settings.AGENT_BUILD_LOG_MAX_CHARS :], security.report, security.sbom)
 
         try:
             return await asyncio.wait_for(asyncio.to_thread(do_build), timeout=settings.AGENT_BUILD_TIMEOUT_SECONDS)
@@ -121,13 +132,20 @@ class ImageBuilder:
         except Exception as exc:
             events = getattr(exc, "build_log", None) or []
             log = "".join(item.get("stream", item.get("error", "")) for item in events if isinstance(item, dict))
-            raise ImageBuildError(str(exc), log[-settings.AGENT_BUILD_LOG_MAX_CHARS :]) from exc
-        finally:
-            if settings.AGENT_IMAGE_PUSH:
-                try:
-                    await asyncio.to_thread(self.client.images.remove, tag, force=True)
-                except Exception:
-                    pass
+            raise ImageBuildError(str(exc), log[-settings.AGENT_BUILD_LOG_MAX_CHARS:]) from exc
+
+    def _publish(self, tag: str, digest: str) -> str:
+        repository, image_tag = tag.rsplit(":", 1)
+        auth = None
+        if settings.AGENT_REGISTRY_USERNAME and settings.AGENT_REGISTRY_PASSWORD:
+            auth = {"username": settings.AGENT_REGISTRY_USERNAME, "password": settings.AGENT_REGISTRY_PASSWORD}
+        for event in self.client.images.push(repository, tag=image_tag, stream=True, decode=True, auth_config=auth):
+            if event.get("error"):
+                raise RuntimeError(f"镜像推送失败: {event['error']}")
+            pushed = (event.get("aux") or {}).get("Digest", "")
+            if pushed.startswith("sha256:"):
+                digest = pushed.removeprefix("sha256:")
+        return f"{repository}@sha256:{digest}"
 
 
 def validate_dockerfile(path: Path) -> None:
@@ -160,20 +178,21 @@ def _logical_lines(text: str) -> list[str]:
     return result
 
 
-def _legacy_dockerfile() -> str:
-    return """FROM agenteval/sandbox:readonly\nCOPY . /agent\nUSER sandbox\nENTRYPOINT [\"python\", \"/agent/.agenteval_legacy_stdio.py\"]\n"""
-
-
-def _legacy_stdio_adapter() -> str:
-    return '''import json\nimport subprocess\nimport sys\nfrom pathlib import Path\n\ntask = json.load(sys.stdin)\nPath("/tmp/task.json").write_text(json.dumps(task), encoding="utf-8")\ncompleted = subprocess.run(["python", "/sandbox/agent_runner.py", "--task-file", "/tmp/task.json", "--output", "/tmp/result.json", "--trace-output", "/tmp/trace.json"], check=False)\nresult = json.loads(Path("/tmp/result.json").read_text(encoding="utf-8"))\ntrace = json.loads(Path("/tmp/trace.json").read_text(encoding="utf-8"))\nprint(json.dumps({"result": result, "trace": trace}, ensure_ascii=False))\nraise SystemExit(completed.returncode)\n'''
-
-
 def _image_digest(image: Any) -> str:
     digests = image.attrs.get("RepoDigests") or []
     if digests and "@sha256:" in digests[0]:
         return digests[0].split("@sha256:", 1)[1]
     raw = str(image.id).removeprefix("sha256:")
     return raw if len(raw) == 64 else hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _immutable_ref(requested: str, image: Any) -> str:
+    if "@sha256:" in requested:
+        return requested
+    digests = image.attrs.get("RepoDigests") or []
+    if digests:
+        return str(digests[0])
+    raise RuntimeError(f"外部镜像无法解析为不可变 digest: {requested}")
 
 
 image_builder: ImageBuilder | None = None

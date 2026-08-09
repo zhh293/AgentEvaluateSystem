@@ -1,0 +1,1 @@
+export default function AdvancedSettingsPanel() { return <><label>MAX STEPS<input name="max_steps" type="number" min="1" defaultValue="20" /></label><label>TIMEOUT SECONDS<input name="max_execution_time_seconds" type="number" min="1" defaultValue="300" /></label></>; }

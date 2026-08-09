@@ -16,6 +16,10 @@ if config.config_file_name is not None:
 
 from app.models.base import Base
 import app.models  # noqa: F401 — 确保所有模型被导入以注册到 Base.metadata
+from app.core.config import settings
+
+sync_database_url = settings.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql+psycopg2://", 1)
+config.set_main_option("sqlalchemy.url", sync_database_url.replace("%", "%%"))
 
 target_metadata = Base.metadata
 

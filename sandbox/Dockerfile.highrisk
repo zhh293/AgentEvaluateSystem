@@ -1,0 +1,9 @@
+# Stage 3: High risk — minimal image; production runtime keeps network and root filesystem read-only.
+FROM python:3.12-slim
+WORKDIR /sandbox
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+RUN useradd --create-home --shell /usr/sbin/nologin --uid 10001 sandbox \
+    && pip install --no-cache-dir opentelemetry-api opentelemetry-sdk opentelemetry-exporter-otlp
+COPY --chown=sandbox:sandbox agent_runner.py otel_instrument.py /sandbox/
+USER sandbox
+ENTRYPOINT ["python", "/sandbox/agent_runner.py"]

@@ -1,0 +1,1 @@
+export default function ProgressTracker({ stage, percent }: { stage: string; percent: number }) { return <div className="form-state" role="status">{stage.toUpperCase()} · {Math.max(0, Math.min(100, percent))}%</div>; }

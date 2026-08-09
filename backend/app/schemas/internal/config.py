@@ -34,7 +34,7 @@ class LLMConfig(BaseModel):
 class SkillConfig(BaseModel):
     name: str
     description: str
-    tools: list[str] = []
+    tools: list[str] = Field(default_factory=list)
     risk_level: RiskLevel = RiskLevel.MEDIUM
 
 
@@ -52,9 +52,9 @@ class AgentConfig(BaseModel):
     description: str = ""
     horizon: str | None = None
     llm: LLMConfig
-    skills: list[SkillConfig] = []
-    tools: list[ToolConfig] = []
-    expected_input: dict = {"type": "text"}
-    expected_output: dict = {"type": "text"}
-    constraints: dict = {}
-    self_evaluation: dict = {"enabled": False, "max_retries": 3}
+    skills: list[SkillConfig] = Field(default_factory=list)
+    tools: list[ToolConfig] = Field(default_factory=list)
+    expected_input: dict = Field(default_factory=lambda: {"type": "text"})
+    expected_output: dict = Field(default_factory=lambda: {"type": "text"})
+    constraints: dict = Field(default_factory=dict)
+    self_evaluation: dict = Field(default_factory=lambda: {"enabled": False, "max_retries": 3})

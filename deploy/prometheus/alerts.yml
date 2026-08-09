@@ -1,0 +1,28 @@
+groups:
+  - name: agent-eval-critical
+    rules:
+      - alert: ApiErrorRateHigh
+        expr: sum(rate(http_requests_total{status=~"5.."}[5m])) / clamp_min(sum(rate(http_requests_total[5m])), 1) > 0.05
+        for: 5m
+        labels: { severity: P2 }
+        annotations: { summary: "API error rate is above 5%" }
+      - alert: CeleryQueueBacklog
+        expr: celery_queue_length{queue="evaluation"} > 100
+        for: 5m
+        labels: { severity: P2 }
+        annotations: { summary: "Evaluation queue backlog exceeds 100" }
+      - alert: SandboxTimeoutRateHigh
+        expr: rate(sandbox_timeouts_total[10m]) / clamp_min(rate(sandbox_runs_total[10m]), 1) > 0.10
+        for: 10m
+        labels: { severity: P3 }
+        annotations: { summary: "Sandbox timeout rate is above 10%" }
+      - alert: HumanMachineAlignmentLow
+        expr: human_machine_alignment_ratio < 0.85
+        for: 5m
+        labels: { severity: P1 }
+        annotations: { summary: "Human-machine alignment below the 85% automation threshold" }
+      - alert: EvaluationSuccessRateDrop
+        expr: evaluation_success_ratio < evaluation_success_ratio offset 1h * 0.8
+        for: 10m
+        labels: { severity: P1 }
+        annotations: { summary: "Evaluation success rate dropped by more than 20%" }

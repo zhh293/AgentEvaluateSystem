@@ -1,0 +1,1 @@
+export default function ModelConfigPanel() { return <><label>PROVIDER<select name="provider"><option>openai</option><option>anthropic</option><option>custom</option></select></label><label>MODEL<input name="model" required /></label><label>API BASE<input name="base" type="url" required /></label><label>API KEY<input name="key" type="password" required /></label></>; }

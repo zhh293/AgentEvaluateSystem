@@ -1,0 +1,107 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: backend, namespace: agent-eval }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: backend } }
+  template:
+    metadata: { labels: { app: backend } }
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, seccompProfile: { type: RuntimeDefault } }
+      initContainers:
+        - name: migration
+          image: ghcr.io/OWNER/agent-eval-backend:latest
+          command: ["alembic", "upgrade", "head"]
+          envFrom: [{ configMapRef: { name: agent-eval-config } }, { secretRef: { name: agent-eval-secrets } }]
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } }
+      containers:
+        - name: backend
+          image: ghcr.io/OWNER/agent-eval-backend:latest
+          ports: [{ containerPort: 8000 }]
+          envFrom: [{ configMapRef: { name: agent-eval-config } }, { secretRef: { name: agent-eval-secrets } }]
+          resources: { requests: { cpu: 250m, memory: 512Mi }, limits: { cpu: "1", memory: 1Gi } }
+          readinessProbe: { httpGet: { path: /health, port: 8000 }, initialDelaySeconds: 5, periodSeconds: 10 }
+          livenessProbe: { httpGet: { path: /health, port: 8000 }, initialDelaySeconds: 15, periodSeconds: 20 }
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ["ALL"] } }
+          volumeMounts: [{ name: tmp, mountPath: /tmp }]
+      volumes: [{ name: tmp, emptyDir: { sizeLimit: 256Mi } }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: backend, namespace: agent-eval }
+spec: { selector: { app: backend }, ports: [{ port: 8000, targetPort: 8000 }] }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: { name: backend, namespace: agent-eval }
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: backend }
+  minReplicas: 2
+  maxReplicas: 10
+  metrics: [{ type: Resource, resource: { name: cpu, target: { type: Utilization, averageUtilization: 65 } } }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: worker, namespace: agent-eval }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: worker } }
+  template:
+    metadata: { labels: { app: worker } }
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: worker
+          image: ghcr.io/OWNER/agent-eval-backend:latest
+          command: ["celery", "-A", "app.core.celery_app", "worker", "-Q", "evaluation", "--concurrency=4"]
+          envFrom: [{ configMapRef: { name: agent-eval-config } }, { secretRef: { name: agent-eval-secrets } }]
+          env: [{ name: DOCKER_HOST, value: tcp://sandbox-daemon:2375 }]
+          resources: { requests: { cpu: 500m, memory: 1Gi }, limits: { cpu: "2", memory: 2Gi } }
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } }
+          volumeMounts: [{ name: tmp, mountPath: /tmp }]
+      volumes: [{ name: tmp, emptyDir: { sizeLimit: 1Gi } }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: frontend, namespace: agent-eval }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: frontend } }
+  template:
+    metadata: { labels: { app: frontend } }
+    spec:
+      containers:
+        - name: frontend
+          image: ghcr.io/OWNER/agent-eval-frontend:latest
+          ports: [{ containerPort: 8080 }]
+          resources: { requests: { cpu: 50m, memory: 64Mi }, limits: { cpu: 250m, memory: 256Mi } }
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, runAsNonRoot: true, capabilities: { drop: ["ALL"] } }
+          volumeMounts:
+            - { name: cache, mountPath: /var/cache/nginx }
+            - { name: run, mountPath: /var/run }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: cache, emptyDir: { sizeLimit: 64Mi } }
+        - { name: run, emptyDir: { sizeLimit: 16Mi } }
+        - { name: tmp, emptyDir: { sizeLimit: 16Mi } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: frontend, namespace: agent-eval }
+spec: { selector: { app: frontend }, ports: [{ port: 80, targetPort: 8080 }] }
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: agent-eval
+  namespace: agent-eval
+  annotations: { nginx.ingress.kubernetes.io/proxy-body-size: "50m" }
+spec:
+  tls: [{ hosts: [agent-eval.example.com], secretName: agent-eval-tls }]
+  rules:
+    - host: agent-eval.example.com
+      http:
+        paths:
+          - { path: /v1, pathType: Prefix, backend: { service: { name: backend, port: { number: 8000 } } } }
+          - { path: /health, pathType: Exact, backend: { service: { name: backend, port: { number: 8000 } } } }
+          - { path: /, pathType: Prefix, backend: { service: { name: frontend, port: { number: 80 } } } }

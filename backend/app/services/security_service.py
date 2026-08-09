@@ -1,5 +1,9 @@
 import logging
 import re
+import json
+import subprocess
+import sys
+import tempfile
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -75,38 +79,6 @@ class SecurityScanner:
         (r'\btelnetlib\b', "B503", Severity.MEDIUM, "Telnet 明文协议应避免使用"),
     ]
 
-    # 内嵌已知高危 CVE 库（生产环境对接 Safety DB / PyUp API）
-    KNOWN_VULNS: dict[str, dict] = {
-        "django": {"cve": "CVE-2024-XXXXX", "min_fixed": "5.0.0", "severity": Severity.HIGH,
-                   "desc": "Django < 5.0 存在 SQL 注入漏洞"},
-        "flask": {"cve": "CVE-2023-30861", "min_fixed": "2.3.0", "severity": Severity.MEDIUM,
-                  "desc": "Flask < 2.3 存在信息泄露"},
-        "langchain": {"cve": "CVE-2024-XXXX", "min_fixed": "0.3.0", "severity": Severity.HIGH,
-                      "desc": "LangChain < 0.3 存在任意代码执行"},
-        "langchain-core": {"cve": "CVE-2024-XXXX", "min_fixed": "0.3.0", "severity": Severity.HIGH,
-                           "desc": "langchain-core < 0.3 存在任意代码执行"},
-        "pyyaml": {"cve": "CVE-2020-14343", "min_fixed": "5.4.0", "severity": Severity.HIGH,
-                   "desc": "PyYAML < 5.4 存在不安全反序列化"},
-        "numpy": {"cve": "CVE-2021-41495", "min_fixed": "1.22.0", "severity": Severity.LOW,
-                  "desc": "NumPy < 1.22 存在空指针引用"},
-        "joblib": {"cve": "CVE-2022-21797", "min_fixed": "1.2.0", "severity": Severity.MEDIUM,
-                   "desc": "joblib < 1.2 存在任意代码执行"},
-        "pillow": {"cve": "CVE-2023-50447", "min_fixed": "10.2.0", "severity": Severity.HIGH,
-                   "desc": "Pillow < 10.2 存在缓冲区溢出"},
-        "requests": {"cve": "CVE-2024-3651", "min_fixed": "2.32.0", "severity": Severity.MEDIUM,
-                     "desc": "requests < 2.32 存在 Host 头注入"},
-        "urllib3": {"cve": "CVE-2024-37891", "min_fixed": "2.2.0", "severity": Severity.MEDIUM,
-                    "desc": "urllib3 < 2.2 存在代理头注入"},
-        "cryptography": {"cve": "CVE-2024-6119", "min_fixed": "43.0.0", "severity": Severity.HIGH,
-                         "desc": "cryptography < 43 存在 TLS 证书验证绕过"},
-        "jinja2": {"cve": "CVE-2024-22195", "min_fixed": "3.1.4", "severity": Severity.MEDIUM,
-                   "desc": "Jinja2 < 3.1.4 存在 XSS"},
-        "gradio": {"cve": "CVE-2024-34510", "min_fixed": "4.20.0", "severity": Severity.HIGH,
-                   "desc": "Gradio < 4.20 存在路径遍历"},
-        "streamlit": {"cve": "CVE-2024-XXXX", "min_fixed": "1.29.0", "severity": Severity.MEDIUM,
-                      "desc": "Streamlit < 1.29 存在目录遍历"},
-    }
-
     def scan_source(self, source_dir: str | Path) -> SecurityScanResult:
         """扫描 Agent 源码目录中所有 Python 文件的静态安全问题"""
         source_path = Path(source_dir)
@@ -165,26 +137,69 @@ class SecurityScanner:
         return SecurityScanResult(status=status, issues=issues)
 
     def audit_dependencies(self, requirements_content: str) -> list[DependencyVulnerability]:
-        """解析 requirements.txt 并检查已知 CVE 漏洞"""
-        vulnerabilities: list[DependencyVulnerability] = []
-        packages = self._parse_requirements(requirements_content)
+        """Audit pinned dependencies against PyPI/OSV through pip-audit.
 
-        for pkg_name, version_spec in packages:
-            info = self.KNOWN_VULNS.get(pkg_name.lower())
-            if info and (not version_spec or self._version_lt(version_spec, info["min_fixed"])):
-                vulnerabilities.append(DependencyVulnerability(
-                    package=pkg_name,
-                    version=version_spec,
-                    cve=info["cve"],
-                    severity=info["severity"].value,
-                    description=info["desc"],
-                ))
-
-        if vulnerabilities:
-            high_count = sum(1 for v in vulnerabilities if v.severity == Severity.HIGH.value)
-            logger.info("依赖审计: %d 个已知漏洞 (HIGH=%d)", len(vulnerabilities), high_count)
-
-        return vulnerabilities
+        Unlike the former hard-coded table, results carry real advisory IDs and
+        are updated by the vulnerability service. Unpinned requirements are
+        rejected from auditing because assigning them an arbitrary version would
+        produce misleading results.
+        """
+        if not requirements_content.strip():
+            return []
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", encoding="utf-8", delete=False) as req:
+            req.write(requirements_content)
+            req_path = req.name
+        try:
+            process = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "pip_audit",
+                    "-r",
+                    req_path,
+                    "--format",
+                    "json",
+                    "--progress-spinner",
+                    "off",
+                    "--timeout",
+                    "15",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=60,
+                check=False,
+            )
+            # pip-audit returns 1 when vulnerabilities are found; both 0 and 1
+            # contain a valid JSON report.
+            if process.returncode not in (0, 1):
+                logger.warning("pip-audit unavailable: %s", process.stderr[-500:])
+                return []
+            report = json.loads(process.stdout or "[]")
+            dependencies = report.get("dependencies", []) if isinstance(report, dict) else report
+            vulnerabilities: list[DependencyVulnerability] = []
+            for dependency in dependencies:
+                for advisory in dependency.get("vulns", []):
+                    aliases = advisory.get("aliases") or []
+                    advisory_id = next((item for item in aliases if item.startswith("CVE-")), advisory.get("id", "UNKNOWN"))
+                    vulnerabilities.append(
+                        DependencyVulnerability(
+                            package=dependency.get("name", "unknown"),
+                            version=dependency.get("version", ""),
+                            cve=advisory_id,
+                            # pip-audit/OSV does not guarantee CVSS in JSON; a
+                            # known vulnerable resolved dependency blocks intake.
+                            severity=Severity.HIGH.value,
+                            description=advisory.get("description") or "; ".join(advisory.get("fix_versions", [])) or advisory_id,
+                        )
+                    )
+            return vulnerabilities
+        except (subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+            logger.warning("dependency audit failed: %s", exc)
+            return []
+        finally:
+            Path(req_path).unlink(missing_ok=True)
 
     def full_audit(self, source_dir: str | Path, requirements_content: str = "") -> SecurityScanResult:
         """完整审计：静态扫描 + 依赖漏洞检查"""
@@ -218,16 +233,5 @@ class SecurityScanner:
                 ver = (match.group(2) or "").strip()
                 packages.append((pkg, ver))
         return packages
-
-    @staticmethod
-    def _version_lt(version_spec: str, min_fixed: str) -> bool:
-        nums = re.findall(r'(\d+)\.(\d+)(?:\.(\d+))?', version_spec)
-        min_nums = re.findall(r'(\d+)\.(\d+)(?:\.(\d+))?', min_fixed)
-        if not nums or not min_nums:
-            return True
-        v = tuple(int(x) if x else 0 for x in nums[0])
-        m = tuple(int(x) if x else 0 for x in min_nums[0])
-        return v < m
-
 
 security_scanner = SecurityScanner()

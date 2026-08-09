@@ -1,5 +1,6 @@
 from datetime import datetime
-from pydantic import BaseModel
+from uuid import UUID
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class DimensionScore(BaseModel):
@@ -10,9 +11,9 @@ class DimensionScore(BaseModel):
 
 
 class RadarChartData(BaseModel):
-    dimensions: list[str] = []
-    scores: list[float] = []
-    benchmarks: list[float] = []
+    dimensions: list[str] = Field(default_factory=list)
+    scores: list[float] = Field(default_factory=list)
+    benchmarks: list[float] = Field(default_factory=list)
 
 
 class ImprovementSuggestion(BaseModel):
@@ -23,8 +24,8 @@ class ImprovementSuggestion(BaseModel):
 
 
 class EvaluationReport(BaseModel):
-    id: str
-    submission_id: str
+    id: UUID
+    submission_id: UUID
     status: str
     agent_type: str
     horizon: str
@@ -33,19 +34,18 @@ class EvaluationReport(BaseModel):
     dimensions: DimensionScore | None = None
     radar_chart_data: RadarChartData | None = None
     attribution: dict | None = None
-    improvement_suggestions: list[ImprovementSuggestion] = []
+    improvement_suggestions: list[ImprovementSuggestion] = Field(default_factory=list)
     benchmark_comparison: dict | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
     created_at: datetime | None = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class EvaluationSummary(BaseModel):
-    id: str
-    submission_id: str
+    id: UUID
+    submission_id: UUID
     agent_name: str | None = None
     status: str
     agent_type: str
@@ -53,5 +53,4 @@ class EvaluationSummary(BaseModel):
     grade: str | None = None
     created_at: datetime | None = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

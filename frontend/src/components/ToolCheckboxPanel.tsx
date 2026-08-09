@@ -1,0 +1,1 @@
+export default function ToolCheckboxPanel({ tools, selected, onToggle }: { tools: string[]; selected: string[]; onToggle: (tool: string) => void }) { return <div className="tool-grid">{tools.map(tool => <button type="button" className={selected.includes(tool) ? "selected" : ""} onClick={() => onToggle(tool)} key={tool}>{tool}</button>)}</div>; }

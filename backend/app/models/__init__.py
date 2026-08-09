@@ -8,6 +8,7 @@ from app.models.trace import TraceMetadata
 from app.models.skill_evaluation import SkillEvaluation
 from app.models.self_eval_loop import SelfEvalLoopRun
 from app.models.quality_gate import QualityGate
+from app.models.audit import AuditLog
 
 __all__ = [
     "Base",
@@ -20,4 +21,5 @@ __all__ = [
     "SkillEvaluation",
     "SelfEvalLoopRun",
     "QualityGate",
+    "AuditLog",
 ]

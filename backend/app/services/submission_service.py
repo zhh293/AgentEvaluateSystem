@@ -1,5 +1,4 @@
 import io
-import json
 import logging
 import tempfile
 import tarfile
@@ -103,7 +102,9 @@ class SubmissionService:
             horizon="short" if config.agent_type != "long_horizon" else "long",
             subtype=config.subtype,
             risk_level=risk.level.value,
-            config=config.model_dump(),
+            # Credentials are runtime-only secrets.  Persisting the request model
+            # verbatim would leak llm_api_key into the submissions JSONB column.
+            config=config.model_dump(exclude={"llm_api_key"}),
             source_package_path="",
             source_package_hash="",
             status=submission_status,
@@ -123,14 +124,70 @@ def _extract_package(package_data: bytes, filename: str) -> Path:
     try:
         if filename.endswith(".zip"):
             with zipfile.ZipFile(io.BytesIO(package_data)) as zf:
-                zf.extractall(extract_dir)
+                _safe_extract_zip(zf, extract_dir)
         else:
             with tarfile.open(fileobj=io.BytesIO(package_data), mode="r:gz") as tf:
-                tf.extractall(extract_dir)
+                _safe_extract_tar(tf, extract_dir)
     except Exception:
         _cleanup_dir(extract_dir)
         raise ValidationException("无法解压源码包到临时目录")
     return extract_dir
+
+
+def _validated_destination(root: Path, member_name: str) -> Path:
+    """Return a safe extraction destination or reject archive traversal."""
+    normalized = member_name.replace("\\", "/")
+    if not normalized or normalized.startswith("/"):
+        raise ValidationException(f"压缩包包含非法路径: {member_name}")
+    destination = (root / normalized).resolve()
+    root_resolved = root.resolve()
+    if destination != root_resolved and root_resolved not in destination.parents:
+        raise ValidationException(f"压缩包路径越界: {member_name}")
+    return destination
+
+
+def _safe_extract_zip(archive: zipfile.ZipFile, root: Path) -> None:
+    for member in archive.infolist():
+        destination = _validated_destination(root, member.filename)
+        # Unix symlinks are encoded in the high file mode bits.
+        if (member.external_attr >> 16) & 0o170000 == 0o120000:
+            raise ValidationException(f"压缩包不允许符号链接: {member.filename}")
+        if member.is_dir():
+            destination.mkdir(parents=True, exist_ok=True)
+            continue
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with archive.open(member) as source, destination.open("wb") as target:
+            _copy_limited(source, target)
+
+
+def _safe_extract_tar(archive: tarfile.TarFile, root: Path) -> None:
+    for member in archive.getmembers():
+        destination = _validated_destination(root, member.name)
+        if member.issym() or member.islnk() or member.isdev() or member.isfifo():
+            raise ValidationException(f"压缩包不允许特殊文件: {member.name}")
+        if member.isdir():
+            destination.mkdir(parents=True, exist_ok=True)
+            continue
+        if not member.isfile():
+            continue
+        source = archive.extractfile(member)
+        if source is None:
+            raise ValidationException(f"无法读取压缩包成员: {member.name}")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with source, destination.open("wb") as target:
+            _copy_limited(source, target)
+
+
+def _copy_limited(source, target) -> None:
+    """Copy one member while enforcing the package-wide configured size bound."""
+    from app.infrastructure.minio import MAX_PACKAGE_SIZE
+
+    copied = 0
+    while chunk := source.read(1024 * 1024):
+        copied += len(chunk)
+        if copied > MAX_PACKAGE_SIZE:
+            raise ValidationException("压缩包成员解压后超过大小限制")
+        target.write(chunk)
 
 
 def _read_requirements(extract_dir: Path) -> str:

@@ -1,0 +1,1 @@
+export default function AgentBasicInfoForm() { return <><label>AGENT NAME<input name="name" required /></label><label>TASK DESCRIPTION<textarea name="description" minLength={30} required /></label></>; }

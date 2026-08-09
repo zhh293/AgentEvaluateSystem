@@ -12,6 +12,8 @@ from app.services.api_key_vault import APIKeyVault
 from app.services.config_generator import config_generator
 from app.services.submission_service import submission_service
 from app.core.exceptions import ValidationException, NotFoundException
+from app.core.security import get_current_user
+from app.models.user import User
 
 router = APIRouter(prefix="/submissions", tags=["submissions"])
 
@@ -29,6 +31,7 @@ async def submit_agent(
     package: UploadFile = File(...),
     config_data: str = Form(...),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     # 1. 解析 config_data JSON
     try:
@@ -54,29 +57,47 @@ async def submit_agent(
     )
 
     submission = result.submission
+    submission.user_id = current_user.id
     db.add(submission)
     await db.flush()
     submission_id = str(submission.id)
 
-    # 4. 生成 YAML 并上传到 MinIO
-    yaml_content = config_generator.generate(config)
-    minio_client.upload_config(submission_id=submission_id, yaml_content=yaml_content)
+    # 4-7. Store artifacts and commit atomically from the application's point
+    # of view. MinIO is not transactional, so compensate uploaded objects if
+    # either the second upload or the database commit fails.
+    uploaded_objects: list[str] = []
+    try:
+        yaml_content = config_generator.generate(config)
+        config_path = minio_client.upload_config(
+            submission_id=submission_id, yaml_content=yaml_content
+        )
+        uploaded_objects.append(config_path)
 
-    # 5. 上传源码包到 MinIO
-    object_path, sha256_hash = minio_client.upload_package(
-        submission_id=submission_id,
-        file_data=package_bytes,
-        filename=package.filename,
-    )
+        object_path, sha256_hash = minio_client.upload_package(
+            submission_id=submission_id,
+            file_data=package_bytes,
+            filename=package.filename,
+        )
+        uploaded_objects.append(object_path)
 
-    # 6. 暂存 API Key
-    APIKeyVault.stash(submission_id, config.llm_api_key)
+        submission.source_package_path = object_path
+        submission.source_package_hash = sha256_hash
+        await db.flush()
+        await db.commit()
+        await db.refresh(submission)
+    except Exception:
+        await db.rollback()
+        for uploaded_object in reversed(uploaded_objects):
+            try:
+                minio_client.delete_package(uploaded_object)
+            except Exception:
+                # Preserve the original failure; orphan cleanup can be retried
+                # by maintenance jobs using the structured error log.
+                pass
+        raise
 
-    # 7. 回填 MinIO 路径和哈希
-    submission.source_package_path = object_path
-    submission.source_package_hash = sha256_hash
-    await db.flush()
-    await db.refresh(submission)
+    # The key is made available only after durable metadata exists.
+    await APIKeyVault.stash(submission_id, config.llm_api_key)
 
     return _build_response(submission, result)
 
@@ -85,9 +106,12 @@ async def submit_agent(
 async def get_submission_status(
     submission_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     submission = await db.get(Submission, submission_id)
     if not submission:
+        raise NotFoundException(f"Submission {submission_id} 不存在")
+    if submission.user_id != current_user.id and current_user.role != "admin":
         raise NotFoundException(f"Submission {submission_id} 不存在")
 
     return _build_status_response(submission)

@@ -1,0 +1,1 @@
+export default function AttributionList({ items }: { items: Array<{ type: string; evidence?: string }> }) { return <div>{items.map((item, index) => <p key={`${item.type}-${index}`}><b>{item.type}</b> {item.evidence}</p>)}</div>; }

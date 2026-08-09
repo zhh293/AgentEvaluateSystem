@@ -17,6 +17,9 @@ class JSONFormatter(logging.Formatter):
         }
         if record.exc_info and record.exc_info[1]:
             log_entry["exception"] = str(record.exc_info[1])
+        for key in ("audit", "user_id", "method", "path", "status_code", "duration_ms", "ip", "user_agent", "code"):
+            if hasattr(record, key):
+                log_entry[key] = getattr(record, key)
         return json.dumps(log_entry, ensure_ascii=False)
 
 

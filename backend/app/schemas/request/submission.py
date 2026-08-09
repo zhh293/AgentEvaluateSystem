@@ -24,13 +24,13 @@ class SubmissionConfigRequest(BaseModel):
     subtype: str | None = None
 
     # 工具勾选
-    enabled_tools: list[str] = []
+    enabled_tools: list[str] = Field(default_factory=list)
 
     # 自定义工具
-    custom_tools: list[dict] = []
+    custom_tools: list[dict] = Field(default_factory=list)
 
     # Skill 配置（长程 Agent 专有）
-    skills: list[dict] = []
+    skills: list[dict] = Field(default_factory=list)
 
     # 约束条件
     language: str = "简体中文"
@@ -48,4 +48,4 @@ class SubmissionConfigRequest(BaseModel):
     # 高级设置
     expected_input_type: str = "text"
     expected_output_type: str = "text"
-    allowed_domains: list[str] = []
+    allowed_domains: list[str] = Field(default_factory=list)

@@ -1,0 +1,1 @@
+export default function TrendChart({ values }: { values: number[] }) { return <div className="signal-chart" aria-label="Score trend">{values.map((value, index) => <i key={index} style={{ height: `${Math.max(0, Math.min(100, value))}%` }} />)}</div>; }

@@ -1,0 +1,1 @@
+export default function FileUploader({ file, onChange }: { file: File | null; onChange: (file: File | null) => void }) { return <label className="dropzone"><input type="file" accept=".zip,.tgz,.gz" onChange={event => onChange(event.target.files?.[0] ?? null)} /><b>{file?.name ?? "DROP OR SELECT PACKAGE"}</b><span>ZIP · TAR.GZ · TGZ</span></label>; }

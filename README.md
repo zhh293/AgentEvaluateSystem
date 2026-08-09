@@ -54,20 +54,25 @@ npm run dev
 # 准备你的 Agent 包（示例结构）
 my-agent/
 ├── agent.py              # Agent 主入口
-├── requirements.txt      # 依赖声明
-├── agent.config.yaml     # Agent 声明配置（必填）
+├── requirements.txt      # 依赖声明（可选，会进行漏洞审计）
 └── tools/                # 自定义工具（可选）
 
 # 打包并提交
 tar -czf my-agent.tar.gz my-agent/
+# 先通过 /v1/auth/register 和 /v1/auth/login 获取 API_TOKEN。
+# config.json 包含 agent_name、description、llm_provider、llm_model、
+# llm_api_base、llm_api_key、enabled_tools 等表单字段。
 curl -X POST http://localhost:8000/v1/submissions \
   -H "Authorization: Bearer $API_TOKEN" \
-  -F "package=@my-agent.tar.gz"
+  -F "package=@my-agent.tar.gz" \
+  -F "config_data=<config.json"
 ```
 
-## Agent 声明配置
+API 接收表单配置并自动生成 `agent.config.yaml`，无需把密钥写入源码包；API Key 仅通过加密、限时、一次性凭据通道交给 Worker。
 
-提交 Agent 时必须包含 `agent.config.yaml`：
+## Agent 配置模型
+
+系统内部生成的配置结构如下：
 
 ```yaml
 agent:
@@ -99,8 +104,8 @@ agent:
 
 | 维度 | 权重 | 核心指标 |
 |------|------|---------|
-| **结果层** | 35% | 准确性、完整性、相关性、连贯性 |
-| **过程层** | 25% | 工具选择准确率、推理路径质量、错误恢复率、幻觉率 |
+| **结果层** | 短程 40% / 长程 30% | 准确性、完整性、相关性、连贯性 |
+| **过程层** | 短程 20% / 长程 30% | 工具选择准确率、推理路径质量、错误恢复率、幻觉率 |
 | **效率层** | 20% | Token 消耗、延迟、步骤效率、任务成本 |
 | **风险层** | 20% | Prompt 注入抵抗、越狱抵抗、危险操作拦截率 |
 
@@ -158,12 +163,12 @@ AgentEvaluateSystem/
 | 后端 | Python 3.12, FastAPI, Celery, RabbitMQ |
 | 数据 | PostgreSQL 16, Redis 7, MinIO |
 | 可观测性 | OpenTelemetry, Jaeger, Prometheus, Grafana |
-| 沙箱 | Docker, gVisor, Firecracker |
+| 沙箱 | Docker/Docker-in-Docker、只读根文件系统、无网络默认策略、cgroup 资源限制 |
 | 部署 | Kubernetes, Docker Compose |
 
 ## 安全
 
-所有第三方 Agent 代码在隔离沙箱中执行。沙箱根据风险等级自动选择隔离强度：Docker 容器（低风险）、Docker + gVisor（中等风险）、Firecracker VM（高风险）。详见 [SDD 第 8 章](docs/SDD.md#8-安全设计)。
+所有第三方 Agent 代码在隔离 Docker 沙箱中执行，默认禁网、丢弃 Linux capabilities、启用 no-new-privileges、限制 CPU/内存/PID，并在超时后强制销毁。Kubernetes 通过隔离节点上的 Docker-in-Docker daemon 承载沙箱；如生产威胁模型要求 gVisor 或 Firecracker，需在集群运行时层另行配置，仓库不会虚假宣称已启用。详见 [SDD 第 8 章](docs/SDD.md#8-安全设计)。
 
 ## License
 

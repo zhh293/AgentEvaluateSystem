@@ -1,0 +1,1 @@
+export default function SkillEvalResult({ name, passRate }: { name: string; passRate: number }) { return <div className="dimension-row"><span>{name}</span><div><i style={{ width: `${passRate}%` }} /></div><strong>{passRate}</strong></div>; }

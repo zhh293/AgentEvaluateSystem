@@ -1,8 +1,10 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import field_validator, model_validator
 from functools import lru_cache
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
     # 应用
     APP_NAME: str = "AgentEvaluateSystem"
     APP_VERSION: str = "0.1.0"
@@ -42,17 +44,27 @@ class Settings(BaseSettings):
     JUDGE_API_BASE: str = "https://api.openai.com/v1"
 
     # 安全
-    JWT_SECRET_KEY: str = "dev-secret-change-in-production"
+    JWT_SECRET_KEY: str = "dev-secret-change-in-production-32-bytes-minimum"
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRE_MINUTES: int = 1440
 
     # 可观测性
     OTEL_EXPORTER_ENDPOINT: str = "http://localhost:4317"
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
+    @field_validator("DATABASE_URL", mode="before")
+    @classmethod
+    def normalize_async_database_url(cls, value: str) -> str:
+        if value.startswith("postgresql://"):
+            return value.replace("postgresql://", "postgresql+asyncpg://", 1)
+        if value.startswith("postgresql+psycopg2://"):
+            return value.replace("postgresql+psycopg2://", "postgresql+asyncpg://", 1)
+        return value
 
+    @model_validator(mode="after")
+    def reject_insecure_production_defaults(self):
+        if self.ENVIRONMENT.lower() == "production" and self.JWT_SECRET_KEY == "dev-secret-change-in-production-32-bytes-minimum":
+            raise ValueError("JWT_SECRET_KEY must be changed in production")
+        return self
 
 @lru_cache()
 def get_settings() -> Settings:

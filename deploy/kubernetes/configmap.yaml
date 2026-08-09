@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: agent-eval-config, namespace: agent-eval }
+data:
+  ENVIRONMENT: production
+  REDIS_URL: redis://redis:6379/0
+  MINIO_ENDPOINT: minio:9000
+  OTEL_EXPORTER_ENDPOINT: http://jaeger:4317
+  SANDBOX_IMAGE_READONLY: ghcr.io/OWNER/agent-eval-sandbox:readonly
+  SANDBOX_IMAGE_WRITABLE: ghcr.io/OWNER/agent-eval-sandbox:writable
+  SANDBOX_IMAGE_HIGHRISK: ghcr.io/OWNER/agent-eval-sandbox:highrisk

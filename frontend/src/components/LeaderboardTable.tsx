@@ -1,0 +1,1 @@
+export default function LeaderboardTable({ rows }: { rows: Array<{ name: string; score: number }> }) { return <div className="run-table">{rows.map((row, index) => <div className="run-row" key={row.name}><span>{index + 1}<b>{row.name}</b></span><strong>{row.score}</strong></div>)}</div>; }

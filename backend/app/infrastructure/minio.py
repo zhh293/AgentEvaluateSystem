@@ -1,5 +1,6 @@
 import io
 import hashlib
+import json
 import tarfile
 import zipfile
 from pathlib import Path
@@ -52,6 +53,21 @@ class MinIOClient:
     def delete_package(self, object_name: str):
         self.client.remove_object(self.bucket, object_name)
 
+    def upload_json(self, object_name: str, payload: dict) -> str:
+        self.ensure_bucket()
+        data = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
+        self.client.put_object(
+            self.bucket,
+            object_name,
+            io.BytesIO(data),
+            len(data),
+            content_type="application/json",
+        )
+        return object_name
+
+    def get_json(self, object_name: str) -> dict:
+        return json.loads(self.get_package(object_name).decode("utf-8"))
+
 
 minio_client = MinIOClient()
 
@@ -68,14 +84,26 @@ def validate_and_extract(package_data: bytes, filename: str) -> list[str]:
         raise ValidationException(f"不支持的文件格式，仅支持 {', '.join(ALLOWED_EXTENSIONS)}")
 
     file_list: list[str] = []
+    expanded_size = 0
 
     try:
         if filename.endswith(".zip"):
             with zipfile.ZipFile(io.BytesIO(package_data)) as zf:
                 file_list = zf.namelist()
+                expanded_size = sum(member.file_size for member in zf.infolist())
+                for member in zf.infolist():
+                    _validate_archive_name(member.filename)
+                    if (member.external_attr >> 16) & 0o170000 == 0o120000:
+                        raise ValidationException(f"压缩包不允许符号链接: {member.filename}")
         else:
             with tarfile.open(fileobj=io.BytesIO(package_data), mode="r:gz") as tf:
-                file_list = [m.name for m in tf.getmembers()]
+                members = tf.getmembers()
+                file_list = [m.name for m in members]
+                expanded_size = sum(m.size for m in members if m.isfile())
+                for member in members:
+                    _validate_archive_name(member.name)
+                    if member.issym() or member.islnk() or member.isdev() or member.isfifo():
+                        raise ValidationException(f"压缩包不允许特殊文件: {member.name}")
     except (tarfile.TarError, zipfile.BadZipFile) as e:
         raise ValidationException(f"无法解压源码包: {e}")
 
@@ -83,4 +111,16 @@ def validate_and_extract(package_data: bytes, filename: str) -> list[str]:
     if "agent.py" not in basenames:
         raise ValidationException("源码包中缺少 agent.py 文件")
 
+    if expanded_size > MAX_PACKAGE_SIZE:
+        raise ValidationException(
+            f"压缩包解压后大小超过限制 ({settings.SANDBOX_MAX_PACKAGE_SIZE_MB}MB)"
+        )
+
     return file_list
+
+
+def _validate_archive_name(name: str) -> None:
+    normalized = name.replace("\\", "/")
+    path = Path(normalized)
+    if not normalized or normalized.startswith("/") or ".." in path.parts:
+        raise ValidationException(f"压缩包包含非法路径: {name}")

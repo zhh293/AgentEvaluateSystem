@@ -1,0 +1,1 @@
+export default function BadCaseConverter({ evaluationId, onConvert }: { evaluationId: string; onConvert: () => void }) { return <button className="action" onClick={onConvert}>CONVERT {evaluationId.slice(0, 8)} TO CASE</button>; }

@@ -1,0 +1,26 @@
+name: CD
+on:
+  workflow_dispatch:
+    inputs: { image_sha: { description: "Image SHA", required: true } }
+concurrency: { group: production, cancel-in-progress: false }
+jobs:
+  deploy:
+    environment: production
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-kubectl@v4
+      - run: mkdir -p "$HOME/.kube" && echo "$KUBE_CONFIG" | base64 -d > "$HOME/.kube/config"
+        env: { KUBE_CONFIG: "${{ secrets.KUBE_CONFIG }}" }
+      - run: kubectl get namespace agent-eval >/dev/null 2>&1 || kubectl create namespace agent-eval
+      - run: kubectl -n agent-eval get secret agent-eval-secrets
+      - run: kubectl apply -f deploy/kubernetes/
+      - run: >-
+          kubectl -n agent-eval patch configmap agent-eval-config --type merge -p
+          '{"data":{"SANDBOX_IMAGE_READONLY":"ghcr.io/${{ github.repository_owner }}/agent-eval-sandbox:readonly","SANDBOX_IMAGE_WRITABLE":"ghcr.io/${{ github.repository_owner }}/agent-eval-sandbox:writable","SANDBOX_IMAGE_HIGHRISK":"ghcr.io/${{ github.repository_owner }}/agent-eval-sandbox:highrisk"}}'
+      - run: kubectl -n agent-eval set image deployment/backend backend=ghcr.io/${{ github.repository_owner }}/agent-eval-backend:${{ inputs.image_sha }} migration=ghcr.io/${{ github.repository_owner }}/agent-eval-backend:${{ inputs.image_sha }}
+      - run: kubectl -n agent-eval set image deployment/worker worker=ghcr.io/${{ github.repository_owner }}/agent-eval-backend:${{ inputs.image_sha }}
+      - run: kubectl -n agent-eval set image deployment/frontend frontend=ghcr.io/${{ github.repository_owner }}/agent-eval-frontend:${{ inputs.image_sha }}
+      - run: kubectl -n agent-eval rollout status deployment/backend --timeout=5m
+      - run: kubectl -n agent-eval rollout status deployment/frontend --timeout=5m
+      - run: kubectl -n agent-eval rollout status deployment/worker --timeout=10m

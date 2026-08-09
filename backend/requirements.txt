@@ -1,4 +1,5 @@
-fastapi==0.115.*
+fastapi==0.141.*
+starlette==1.6.*
 uvicorn[standard]==0.32.*
 pydantic==2.10.*
 pydantic-settings==2.7.*
@@ -13,3 +14,15 @@ asyncpg==0.30.*
 httpx==0.28.*
 bandit==1.8.*
 safety==3.*
+pytest==9.1.*
+pytest-asyncio==1.3.*
+pytest-cov==7.*
+docker==7.*
+opentelemetry-api==1.*
+opentelemetry-sdk==1.*
+opentelemetry-exporter-otlp==1.*
+pip-audit==2.*
+PyJWT==2.*
+redis==5.*
+email-validator==2.*
+prometheus-client==0.21.*

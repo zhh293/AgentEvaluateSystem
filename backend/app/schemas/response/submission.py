@@ -1,5 +1,5 @@
 from datetime import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ToolInfo(BaseModel):
@@ -19,12 +19,11 @@ class SubmissionResponse(BaseModel):
     risk_level: str
     status: str
     status_message: str | None = None
-    matched_tools: list[ToolInfo] = []
-    risk_reasons: list[str] = []
+    matched_tools: list[ToolInfo] = Field(default_factory=list)
+    risk_reasons: list[str] = Field(default_factory=list)
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class SubmissionStatusResponse(BaseModel):
@@ -35,10 +34,9 @@ class SubmissionStatusResponse(BaseModel):
     risk_level: str
     status_message: str | None = None
     config: dict | None = None
-    matched_tools: list[ToolInfo] = []
-    risk_reasons: list[str] = []
+    matched_tools: list[ToolInfo] = Field(default_factory=list)
+    risk_reasons: list[str] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

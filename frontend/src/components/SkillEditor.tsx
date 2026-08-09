@@ -1,0 +1,1 @@
+export default function SkillEditor({ value, onChange }: { value: string; onChange: (value: string) => void }) { return <label>SKILLS JSON<textarea value={value} onChange={event => onChange(event.target.value)} placeholder='[{"name":"skill"}]' /></label>; }

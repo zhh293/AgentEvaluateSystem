@@ -1,9 +1,10 @@
 from datetime import datetime
-from pydantic import BaseModel
+from uuid import UUID
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class TestCaseResponse(BaseModel):
-    id: str
+    id: UUID
     task_id: str
     agent_type: str
     horizon: str
@@ -12,14 +13,13 @@ class TestCaseResponse(BaseModel):
     prompt: str
     context: dict | None = None
     expected_behavior: dict | None = None
-    rubric: dict | None = None
+    rubric: list[dict] = Field(default_factory=list)
     status: str
     version: int
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class TestCaseListResponse(BaseModel):

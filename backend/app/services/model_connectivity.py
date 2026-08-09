@@ -32,16 +32,15 @@ class ModelConnectivityChecker:
         if not base_url:
             return ConnectivityResult(ok=False, error=f"无法确定 {provider} 的 API 地址")
 
-        url = base_url.rstrip("/") + "/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
-        body = {
-            "model": model,
-            "messages": [{"role": "user", "content": "ping"}],
-            "max_tokens": 1,
-        }
+        headers = {"Content-Type": "application/json"}
+        if provider.lower() == "anthropic":
+            url = base_url.rstrip("/") + "/messages"
+            headers.update({"x-api-key": api_key, "anthropic-version": "2023-06-01"})
+            body = {"model": model, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}
+        else:
+            url = base_url.rstrip("/") + "/chat/completions"
+            headers["Authorization"] = f"Bearer {api_key}"
+            body = {"model": model, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}
 
         start = time.perf_counter()
         try:

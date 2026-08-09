@@ -1,6 +1,7 @@
 import json
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi.responses import JSONResponse, PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.database import get_db
@@ -8,12 +9,12 @@ from app.infrastructure.minio import minio_client
 from app.models.submission import Submission
 from app.schemas.request.submission import SubmissionConfigRequest
 from app.schemas.response.submission import SubmissionResponse, SubmissionStatusResponse, ToolInfo
-from app.services.api_key_vault import APIKeyVault
 from app.services.config_generator import config_generator
 from app.services.submission_service import submission_service
-from app.core.exceptions import ValidationException, NotFoundException
+from app.core.exceptions import ValidationException, NotFoundException, QueueUnavailableException
 from app.core.security import get_current_user
 from app.models.user import User
+from app.worker.tasks import build_submission_image
 
 router = APIRouter(prefix="/submissions", tags=["submissions"])
 
@@ -96,8 +97,14 @@ async def submit_agent(
                 pass
         raise
 
-    # The key is made available only after durable metadata exists.
-    await APIKeyVault.stash(submission_id, config.llm_api_key)
+    try:
+        build_submission_image.delay(submission_id)
+    except Exception as exc:
+        submission.status = "build_failed"
+        submission.build_status = "build_failed"
+        submission.status_message = "无法将镜像构建任务加入队列"
+        await db.commit()
+        raise QueueUnavailableException("无法将镜像构建任务加入队列") from exc
 
     return _build_response(submission, result)
 
@@ -115,6 +122,49 @@ async def get_submission_status(
         raise NotFoundException(f"Submission {submission_id} 不存在")
 
     return _build_status_response(submission)
+
+
+@router.get("/{submission_id}/build-log", response_class=PlainTextResponse)
+async def get_build_log(
+    submission_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    submission = await _owned_submission(db, submission_id, current_user)
+    if not submission.build_log_path:
+        raise NotFoundException("构建日志尚不可用")
+    return PlainTextResponse(minio_client.get_package(submission.build_log_path).decode("utf-8", errors="replace"))
+
+
+@router.get("/{submission_id}/image-scan", response_class=JSONResponse)
+async def get_image_scan(
+    submission_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    submission = await _owned_submission(db, submission_id, current_user)
+    if not submission.image_scan_path:
+        raise NotFoundException("镜像扫描报告尚不可用")
+    return JSONResponse(minio_client.get_json(submission.image_scan_path))
+
+
+@router.get("/{submission_id}/sbom", response_class=JSONResponse)
+async def get_sbom(
+    submission_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    submission = await _owned_submission(db, submission_id, current_user)
+    if not submission.sbom_path:
+        raise NotFoundException("SBOM 尚不可用")
+    return JSONResponse(minio_client.get_json(submission.sbom_path))
+
+
+async def _owned_submission(db: AsyncSession, submission_id: str, current_user: User) -> Submission:
+    submission = await db.get(Submission, submission_id)
+    if not submission or (submission.user_id != current_user.id and current_user.role != "admin"):
+        raise NotFoundException(f"Submission {submission_id} 不存在")
+    return submission
 
 
 def _build_tool_info(result) -> list[ToolInfo]:
@@ -135,6 +185,10 @@ def _build_response(submission: Submission, result) -> SubmissionResponse:
         risk_level=submission.risk_level,
         status=submission.status,
         status_message=submission.status_message,
+        build_mode=submission.build_mode,
+        build_status=submission.build_status,
+        runtime_protocol=submission.runtime_protocol,
+        image_digest=submission.image_digest,
         matched_tools=_build_tool_info(result),
         risk_reasons=result.risk_assessment.reasons if result.risk_assessment else [],
         created_at=submission.created_at,
@@ -149,6 +203,15 @@ def _build_status_response(submission: Submission) -> SubmissionStatusResponse:
         status=submission.status,
         risk_level=submission.risk_level,
         status_message=submission.status_message,
+        build_mode=submission.build_mode,
+        build_status=submission.build_status,
+        runtime_protocol=submission.runtime_protocol,
+        image_ref=submission.image_ref,
+        image_digest=submission.image_digest,
+        dockerfile_path=submission.dockerfile_path,
+        build_log_path=submission.build_log_path,
+        sbom_path=submission.sbom_path,
+        image_scan_path=submission.image_scan_path,
         config=submission.config,
         created_at=submission.created_at,
         updated_at=submission.updated_at,

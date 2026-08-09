@@ -9,3 +9,13 @@ data:
   SANDBOX_IMAGE_READONLY: ghcr.io/OWNER/agent-eval-sandbox:readonly
   SANDBOX_IMAGE_WRITABLE: ghcr.io/OWNER/agent-eval-sandbox:writable
   SANDBOX_IMAGE_HIGHRISK: ghcr.io/OWNER/agent-eval-sandbox:highrisk
+  AGENT_BUILDER_DOCKER_HOST: tcp://builder-daemon:2375
+  AGENT_IMAGE_REPOSITORY: ghcr.io/OWNER/agent-eval-submission
+  AGENT_IMAGE_PUSH: "true"
+  AGENT_TRIVY_PATH: /usr/local/bin/trivy
+  AGENT_BUILD_NETWORK_MODE: none
+  AGENT_HTTP_INVOKER_IMAGE: ghcr.io/OWNER/agent-eval-sandbox:http-invoker
+  AGENT_EGRESS_PROXY_IMAGE: ghcr.io/OWNER/agent-eval-sandbox:egress-proxy
+  AGENT_EGRESS_PROXY: http://agenteval-egress:3128
+  AGENT_EGRESS_PROXY_CONTAINER: agenteval-egress-proxy
+  AGENT_EGRESS_ALLOWED_DOMAINS: api.openai.com,api.anthropic.com,api.deepseek.com,dashscope.aliyuncs.com,open.bigmodel.cn,api.moonshot.cn

@@ -1,7 +1,12 @@
 import json
 import logging
+import asyncio
+import ipaddress
+import socket
+from urllib.parse import urlparse
 from dataclasses import dataclass, field
 from app.services.config_generator import LLM_PROVIDER_PRESETS
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +36,9 @@ class ModelConnectivityChecker:
         base_url = api_base or LLM_PROVIDER_PRESETS.get(provider, "")
         if not base_url:
             return ConnectivityResult(ok=False, error=f"无法确定 {provider} 的 API 地址")
+        endpoint_error = await _validate_endpoint(base_url)
+        if endpoint_error:
+            return ConnectivityResult(ok=False, error=endpoint_error)
 
         headers = {"Content-Type": "application/json"}
         if provider.lower() == "anthropic":
@@ -44,7 +52,7 @@ class ModelConnectivityChecker:
 
         start = time.perf_counter()
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(timeout), trust_env=False, follow_redirects=False) as client:
                 response = await client.post(url, headers=headers, json=body)
                 latency_ms = (time.perf_counter() - start) * 1000
 
@@ -94,3 +102,25 @@ def _extract_error(response) -> str:
 
 
 connectivity_checker = ModelConnectivityChecker()
+
+
+async def _validate_endpoint(base_url: str) -> str | None:
+    parsed = urlparse(base_url)
+    if parsed.scheme not in {"https", "http"} or not parsed.hostname or parsed.username or parsed.password:
+        return "模型 API 地址必须是无用户信息的 HTTP(S) URL"
+    if parsed.scheme != "https" and not settings.ALLOW_PRIVATE_MODEL_ENDPOINTS:
+        return "模型 API 地址必须使用 HTTPS"
+    allowed_hosts = {host.strip().lower() for host in settings.MODEL_ENDPOINT_ALLOWED_DOMAINS.split(",") if host.strip()}
+    if not settings.ALLOW_PRIVATE_MODEL_ENDPOINTS and parsed.hostname.lower() not in allowed_hosts:
+        return "模型 API 域名不在平台 MODEL_ENDPOINT_ALLOWED_DOMAINS 白名单中"
+    try:
+        records = await asyncio.to_thread(socket.getaddrinfo, parsed.hostname, parsed.port or 443, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        return "模型 API 域名无法解析"
+    if settings.ALLOW_PRIVATE_MODEL_ENDPOINTS:
+        return None
+    for record in records:
+        address = ipaddress.ip_address(record[4][0])
+        if not address.is_global:
+            return "模型 API 地址不能解析到私网、回环、链路本地或保留地址"
+    return None

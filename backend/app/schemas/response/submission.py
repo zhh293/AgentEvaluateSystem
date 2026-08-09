@@ -19,6 +19,10 @@ class SubmissionResponse(BaseModel):
     risk_level: str
     status: str
     status_message: str | None = None
+    build_mode: str
+    build_status: str
+    runtime_protocol: str
+    image_digest: str | None = None
     matched_tools: list[ToolInfo] = Field(default_factory=list)
     risk_reasons: list[str] = Field(default_factory=list)
     created_at: datetime
@@ -33,6 +37,15 @@ class SubmissionStatusResponse(BaseModel):
     status: str
     risk_level: str
     status_message: str | None = None
+    build_mode: str
+    build_status: str
+    runtime_protocol: str
+    image_ref: str | None = None
+    image_digest: str | None = None
+    dockerfile_path: str | None = None
+    build_log_path: str | None = None
+    sbom_path: str | None = None
+    image_scan_path: str | None = None
     config: dict | None = None
     matched_tools: list[ToolInfo] = Field(default_factory=list)
     risk_reasons: list[str] = Field(default_factory=list)

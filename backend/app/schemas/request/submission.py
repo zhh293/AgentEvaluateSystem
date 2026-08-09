@@ -49,3 +49,4 @@ class SubmissionConfigRequest(BaseModel):
     expected_input_type: str = "text"
     expected_output_type: str = "text"
     allowed_domains: list[str] = Field(default_factory=list)
+    dockerfile_path: str | None = None

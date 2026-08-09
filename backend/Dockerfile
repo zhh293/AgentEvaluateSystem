@@ -1,7 +1,10 @@
+FROM aquasec/trivy:0.58.1 AS trivy
+
 FROM python:3.12-slim AS runtime
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 TRIVY_CACHE_DIR=/tmp/trivy-cache
 WORKDIR /app
 RUN groupadd --gid 10001 app && useradd --uid 10001 --gid app --no-create-home app
+COPY --from=trivy /usr/local/bin/trivy /usr/local/bin/trivy
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 COPY --chown=app:app app app

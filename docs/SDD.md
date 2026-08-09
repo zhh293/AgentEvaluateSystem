@@ -616,9 +616,9 @@ safety==3.x                 # 依赖漏洞扫描
 └──────────────────────────┬───────────────────────────────┘
                            ▼
 ┌──────────────────────────────────────────────────────────┐
-│  Phase 2: 沙箱部署 (异步)                                   │
-│  根据风险等级选择沙箱级别 → Docker Build → 注入源码+依赖      │
-│  → 注入 Task Suite → 启动 OpenTelemetry Agent              │
+│  Phase 2: 隔离构建 (异步，独立 Build Worker)                  │
+│  Dockerfile-first → 无网络构建 → 镜像扫描/SBOM → 推送摘要引用  │
+│  无 Dockerfile 的旧 agent.py 包由平台生成兼容 Dockerfile      │
 └──────────────────────────┬───────────────────────────────┘
                            ▼
 ┌──────────────────────────────────────────────────────────┐
@@ -664,71 +664,38 @@ safety==3.x                 # 依赖漏洞扫描
 
 #### 6.1.1 提交包规范
 
-```
-submission.zip (或 tar.gz, max 50MB)
-├── agent.py (或 agent/)           # 必选：Agent 主入口
-├── requirements.txt / pyproject.toml  # 必选：依赖声明
-├── agent.config.yaml             # 必选：Agent 声明配置
-├── tools/                        # 可选：自定义工具定义
-├── skills/                       # 可选：Skill 定义（长程 Agent）
-├── prompts/                      # 可选：Prompt 模板
-└── README.md                     # 可选
+```text
+submission.zip (或 tar.gz / tgz, max 50MB)
+├── Dockerfile                   # 首选：提交者定义依赖与启动方式
+├── agent-eval.yaml              # 首选：平台构建/运行契约
+├── src/                         # 任意语言、任意多文件结构
+├── requirements.txt / pyproject.toml  # 可选：同时参与源码依赖审计
+├── tools/ / skills/ / prompts/  # 可选
+└── agent.py                     # 仅旧版兼容包需要
 ```
 
-#### 6.1.2 agent.config.yaml 完整规范
+#### 6.1.2 agent-eval.yaml 运行契约
 
 ```yaml
-agent:
-  name: "MyAgent"
-  version: "1.0.0"
-  type: long_horizon            # short_horizon | long_horizon
-  subtype: coding               # conversational | coding | rag | gui | workflow | custom
-  description: "一个用于数据分析场景的长程 Agent"
-
-  horizon: long                 # short | long (自动从 type 推断)
-
-  llm:
-    provider: anthropic
-    model: claude-opus-4-7
-    requires_api_key: true
-
-  skills:                       # 长程 Agent 专有
-    - name: data_analysis
-      description: "分析 CSV/Excel 数据并生成报告"
-      tools: [read_file, run_python, generate_chart]
-      risk_level: medium
-    - name: report_writer
-      description: "将分析结果写为 Markdown 报告"
-      tools: [write_file]
-      risk_level: low
-
-  tools:                         # 短程 Agent 工具列表
-    - name: search_knowledge_base
-      description: "检索知识库"
-      risk_level: low
-
-  expected_input:
-    type: text                   # text | image | file | mixed
-
-  expected_output:
-    type: text
-    format: markdown
-
-  constraints:
-    max_steps: 20
-    max_execution_time_seconds: 300
-    allowed_domains: []          # 网络白名单（空=不允许外网）
-    allowed_tools: []            # 工具白名单（空=允许声明的全部）
-
-  self_evaluation:               # 自我评测配置（可选）
-    enabled: false
-    max_retries: 3
+schema_version: 1
+build:
+  dockerfile: Dockerfile
+  context: .
+runtime:
+  protocol: stdio              # stdio | http
+  timeout_seconds: 300
+  # HTTP 模式额外声明 port / healthcheck / invoke
+security:
+  network: none                # none | restricted
+  allowed_domains: []
 ```
+
+业务表单仍由系统生成内部 `agent.config.yaml`，用于 Rubric、工具、模型和评测约束；它不再承担项目启动职责。Dockerfile 是构建契约，`agent-eval.yaml` 是调用契约，源码压缩包是不可变审计原件。
 
 #### 6.1.3 校验流程
 
 ```
-提交包 → 解压 → agent.config.yaml 存在且合法
+提交包 → 安全解压 → Dockerfile + agent-eval.yaml（或旧版 agent.py）
                 │
                 ├─ 依赖声明校验
                 ├─ Agent 类型识别: short_horizon / long_horizon
@@ -743,7 +710,8 @@ agent:
                 │     ├─ 检测网络调用白名单违规
                 │     └─ 检测文件系统危险操作
                 ├─ 依赖安全审计 (safety check)
-                └─ 代码规模检查 (单文件 < 5000 行)
+                ├─ Dockerfile 策略检查（禁止远程 ADD、Docker Socket、特权参数）
+                └─ build_queued → building（含镜像扫描）→ image_ready
 ```
 
 ### 6.2 沙箱运行时层

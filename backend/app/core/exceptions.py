@@ -26,3 +26,8 @@ class SandboxException(AppException):
 class EvaluationException(AppException):
     def __init__(self, message: str):
         super().__init__(message, code="EVALUATION_ERROR", status_code=500)
+
+
+class QueueUnavailableException(AppException):
+    def __init__(self, message: str):
+        super().__init__(message, code="QUEUE_UNAVAILABLE", status_code=503)

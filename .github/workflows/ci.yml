@@ -39,7 +39,7 @@ jobs:
     needs: [backend, frontend]
     permissions: { contents: read, packages: write }
     runs-on: ubuntu-latest
-    strategy: { matrix: { profile: [readonly, writable, highrisk] } }
+    strategy: { matrix: { profile: [readonly, writable, highrisk, http-invoker, egress-proxy] } }
     steps:
       - uses: actions/checkout@v4
       - uses: docker/login-action@v3

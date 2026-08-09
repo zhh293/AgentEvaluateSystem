@@ -1,0 +1,10 @@
+FROM alpine:3.20
+
+RUN apk add --no-cache squid \
+    && mkdir -p /var/cache/squid /var/log/squid \
+    && chown -R squid:squid /var/cache/squid /var/log/squid
+COPY egress_proxy_entrypoint.sh /usr/local/bin/egress-proxy
+RUN chmod 0555 /usr/local/bin/egress-proxy
+USER squid
+EXPOSE 3128
+ENTRYPOINT ["/usr/local/bin/egress-proxy"]

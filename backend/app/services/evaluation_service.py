@@ -4,14 +4,18 @@ import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import NotFoundException, ValidationException
+from app.core.exceptions import NotFoundException, QueueUnavailableException, ValidationException
 from app.models.evaluation import Evaluation
 from app.models.submission import Submission
 from app.worker.tasks import build_evaluation_dag
+from app.services.api_key_vault import APIKeyVault
 
 
 class EvaluationService:
-    async def start(self, db: AsyncSession, submission_id: str, user_id: uuid.UUID, is_admin: bool = False) -> tuple[Evaluation, str]:
+    async def start(
+        self, db: AsyncSession, submission_id: str, user_id: uuid.UUID,
+        is_admin: bool = False, llm_api_key: str = "",
+    ) -> tuple[Evaluation, str]:
         try:
             submission_uuid = uuid.UUID(submission_id)
         except ValueError as exc:
@@ -21,7 +25,7 @@ class EvaluationService:
             raise NotFoundException(f"Submission {submission_id} 不存在")
         if submission.user_id != user_id and not is_admin:
             raise NotFoundException(f"Submission {submission_id} 不存在")
-        if submission.status not in {"validated", "validated_with_warnings"}:
+        if submission.status != "image_ready" or not submission.image_ref:
             raise ValidationException(f"Submission 状态不允许评测: {submission.status}")
         evaluation = Evaluation(
             submission_id=submission.id,
@@ -31,7 +35,16 @@ class EvaluationService:
         )
         db.add(evaluation)
         await db.flush()
-        task = build_evaluation_dag(str(submission.id), str(evaluation.id), submission.horizon).apply_async()
+        await db.commit()
+        credential_id = str(evaluation.id)
+        try:
+            await APIKeyVault.stash(credential_id, llm_api_key)
+            task = build_evaluation_dag(str(submission.id), credential_id, submission.horizon).apply_async()
+        except Exception as exc:
+            await APIKeyVault.purge(credential_id)
+            evaluation.status = "failed"
+            await db.commit()
+            raise QueueUnavailableException("无法安全保存运行凭据或将评测任务加入队列") from exc
         return evaluation, task.id
 
     async def get(self, db: AsyncSession, evaluation_id: str, user_id: uuid.UUID, is_admin: bool = False) -> Evaluation:

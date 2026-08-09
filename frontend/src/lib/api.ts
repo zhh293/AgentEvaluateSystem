@@ -43,6 +43,21 @@ export async function submitAgent(file: File, config: SubmissionForm) {
   return api<{ id: string; status: string; risk_level: string }>("/submissions", { method: "POST", body: form });
 }
 
+export type SubmissionStatus = {
+  id: string;
+  status: string;
+  build_mode: "dockerfile" | "legacy";
+  build_status: string;
+  runtime_protocol: "stdio" | "http";
+  image_ref: string | null;
+  image_digest: string | null;
+  status_message: string | null;
+};
+
+export function getSubmissionStatus(id: string) {
+  return api<SubmissionStatus>(`/submissions/${id}/status`);
+}
+
 export type EvaluationSummary = { id: string; agent_name: string; agent_type: string; overall_score: number | null; grade: string | null; status: string; created_at: string };
 export type EvaluationReport = { id: string; status: string; agent_type: string; horizon: string; overall_score: number | null; grade: string | null; dimensions: Record<string, number> | null; improvement_suggestions: Array<{ severity: string; category: string; description: string; recommendation: string }>; created_at?: string };
 export type Trace = { spans: Array<Record<string, unknown>> };
@@ -52,7 +67,7 @@ export const evaluationsApi = {
   list: () => api<{ items: EvaluationSummary[] }>("/evaluations"),
   report: (id: string) => api<EvaluationReport>(`/evaluations/${id}/report`),
   trace: (id: string) => api<Trace>(`/evaluations/${id}/trace`),
-  start: (submissionId: string) => api<{ evaluation_id: string }>(`/evaluations/${submissionId}/start`, { method: "POST" }),
+  start: (submissionId: string, llmApiKey: string) => api<{ evaluation_id: string }>(`/evaluations/${submissionId}/start`, { method: "POST", body: JSON.stringify({ llm_api_key: llmApiKey }) }),
 };
 
 export const casesApi = {

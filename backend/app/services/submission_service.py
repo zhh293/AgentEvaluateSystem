@@ -3,6 +3,7 @@ import logging
 import tempfile
 import tarfile
 import zipfile
+from dataclasses import replace
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -16,6 +17,8 @@ from app.services.config_generator import config_generator
 from app.services.model_connectivity import ConnectivityResult, connectivity_checker
 from app.services.risk_analyzer import RiskAssessment, assess_risk_level
 from app.services.security_service import SecurityScanResult, security_scanner, ScanStatus
+from app.services.agent_package import AgentPackageContract, SecurityContract, load_package_contract, reject_packaged_secrets, resolve_project_root
+from app.services.image_builder import validate_dockerfile
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +30,7 @@ class PipelineResult:
     connectivity_result: ConnectivityResult | None = None
     scan_result: SecurityScanResult | None = None
     risk_assessment: RiskAssessment | None = None
+    package_contract: AgentPackageContract | None = None
 
 
 class SubmissionService:
@@ -44,19 +48,21 @@ class SubmissionService:
         # 1. 解包校验源码结构
         validate_and_extract(package_bytes, filename)
 
-        # 2. 模型连通性校验
-        connectivity = await connectivity_checker.check(
-            provider=config.llm_provider,
-            api_base=config.llm_api_base,
-            api_key=config.llm_api_key,
-            model=config.llm_model,
-        )
-        if not connectivity.ok:
-            raise ValidationException(f"模型连通性校验失败: {connectivity.error}")
-
-        # 3. 解包到临时目录，执行安全扫描 + 依赖审计
+        # 2. 解包并先完成所有本地契约与安全检查，避免为非法包调用外部模型端点。
         extract_dir = _extract_package(package_bytes, filename)
         try:
+            reject_packaged_secrets(extract_dir)
+            package_contract = load_package_contract(extract_dir, config.dockerfile_path)
+            declared_domains = tuple(sorted(set(package_contract.security.allowed_domains) | set(config.allowed_domains)))
+            if declared_domains:
+                config.allowed_domains = list(declared_domains)
+                package_contract = replace(
+                    package_contract,
+                    security=SecurityContract(network="restricted", allowed_domains=declared_domains),
+                )
+            if package_contract.build.mode == "dockerfile":
+                project_root = resolve_project_root(extract_dir, package_contract)
+                validate_dockerfile(project_root / package_contract.build.dockerfile)
             requirements_txt = _read_requirements(extract_dir)
             scan_result = security_scanner.full_audit(extract_dir, requirements_txt)
 
@@ -66,6 +72,16 @@ class SubmissionService:
                 raise ValidationException(f"安全扫描不通过: {detail}")
         finally:
             _cleanup_dir(extract_dir)
+
+        # 3. 模型连通性校验
+        connectivity = await connectivity_checker.check(
+            provider=config.llm_provider,
+            api_base=config.llm_api_base,
+            api_key=config.llm_api_key,
+            model=config.llm_model,
+        )
+        if not connectivity.ok:
+            raise ValidationException(f"模型连通性校验失败: {connectivity.error}")
 
         # 4. 工具匹配
         matched_tools = match_enabled_tools(config.enabled_tools)
@@ -89,10 +105,7 @@ class SubmissionService:
         )
 
         # 8. 确定 submission 状态
-        if scan_result.status == ScanStatus.VALIDATED_WITH_WARNINGS:
-            submission_status = "validated_with_warnings"
-        else:
-            submission_status = "validated"
+        submission_status = "build_queued"
 
         # 9. 创建 Submission 记录 (先不写 DB，由 API 层处理)
         submission = Submission(
@@ -104,10 +117,14 @@ class SubmissionService:
             risk_level=risk.level.value,
             # Credentials are runtime-only secrets.  Persisting the request model
             # verbatim would leak llm_api_key into the submissions JSONB column.
-            config=config.model_dump(exclude={"llm_api_key"}),
+            config={**config.model_dump(exclude={"llm_api_key"}), "package_contract": package_contract.as_dict()},
             source_package_path="",
             source_package_hash="",
             status=submission_status,
+            build_mode=package_contract.build.mode,
+            dockerfile_path=package_contract.build.dockerfile,
+            runtime_protocol=package_contract.runtime.protocol,
+            build_status="queued",
         )
 
         return PipelineResult(
@@ -116,6 +133,7 @@ class SubmissionService:
             connectivity_result=connectivity,
             scan_result=scan_result,
             risk_assessment=risk,
+            package_contract=package_contract,
         )
 
 

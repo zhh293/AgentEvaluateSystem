@@ -13,7 +13,7 @@ from app.core.config import settings
 
 
 class APIKeyVault:
-    TTL_SECONDS = 15 * 60
+    TTL_SECONDS = settings.CREDENTIAL_TTL_SECONDS
     _redis = redis.from_url(settings.REDIS_URL, decode_responses=False)
     _local: dict[str, tuple[bytes, float]] = {}
     _fernet = Fernet(base64.urlsafe_b64encode(hashlib.sha256(settings.JWT_SECRET_KEY.encode()).digest()))
@@ -25,6 +25,8 @@ class APIKeyVault:
         try:
             await cls._redis.setex(key, cls.TTL_SECONDS, encrypted)
         except Exception:
+            if settings.ENVIRONMENT.lower() == "production":
+                raise RuntimeError("生产环境凭据保险库不可用")
             cls._local[submission_id] = (encrypted, time.monotonic() + cls.TTL_SECONDS)
 
     @classmethod
@@ -45,3 +47,12 @@ class APIKeyVault:
             return cls._fernet.decrypt(encrypted, ttl=cls.TTL_SECONDS).decode()
         except InvalidToken:
             return None
+
+    @classmethod
+    async def purge(cls, submission_id: str) -> None:
+        key = f"credential:submission:{submission_id}"
+        cls._local.pop(submission_id, None)
+        try:
+            await cls._redis.delete(key)
+        except Exception:
+            pass

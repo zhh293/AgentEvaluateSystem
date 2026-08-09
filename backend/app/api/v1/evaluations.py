@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Body, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,8 +15,15 @@ router = APIRouter(prefix="/evaluations", tags=["evaluations"])
 
 
 @router.post("/{submission_id}/start", status_code=202)
-async def start_evaluation(submission_id: str, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
-    evaluation, task_id = await evaluation_service.start(db, submission_id, current_user.id, current_user.role == "admin")
+async def start_evaluation(
+    submission_id: str,
+    llm_api_key: str = Body(..., embed=True, min_length=1, max_length=8192),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    evaluation, task_id = await evaluation_service.start(
+        db, submission_id, current_user.id, current_user.role == "admin", llm_api_key
+    )
     return {"evaluation_id": str(evaluation.id), "task_id": task_id, "status": evaluation.status}
 
 

@@ -68,6 +68,12 @@ class MinIOClient:
     def get_json(self, object_name: str) -> dict:
         return json.loads(self.get_package(object_name).decode("utf-8"))
 
+    def upload_text(self, object_name: str, content: str, content_type: str = "text/plain") -> str:
+        self.ensure_bucket()
+        data = content.encode("utf-8")
+        self.client.put_object(self.bucket, object_name, io.BytesIO(data), len(data), content_type=content_type)
+        return object_name
+
 
 minio_client = MinIOClient()
 
@@ -106,10 +112,6 @@ def validate_and_extract(package_data: bytes, filename: str) -> list[str]:
                         raise ValidationException(f"压缩包不允许特殊文件: {member.name}")
     except (tarfile.TarError, zipfile.BadZipFile) as e:
         raise ValidationException(f"无法解压源码包: {e}")
-
-    basenames = {Path(f).name for f in file_list}
-    if "agent.py" not in basenames:
-        raise ValidationException("源码包中缺少 agent.py 文件")
 
     if expanded_size > MAX_PACKAGE_SIZE:
         raise ValidationException(

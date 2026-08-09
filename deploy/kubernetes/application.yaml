@@ -63,6 +63,32 @@ spec:
 ---
 apiVersion: apps/v1
 kind: Deployment
+metadata: { name: builder, namespace: agent-eval }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: builder } }
+  template:
+    metadata: { labels: { app: builder } }
+    spec:
+      nodeSelector: { workload: agent-builder }
+      tolerations: [{ key: workload, operator: Equal, value: agent-builder, effect: NoSchedule }]
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: builder
+          image: ghcr.io/OWNER/agent-eval-backend:latest
+          command: ["celery", "-A", "app.core.celery_app", "worker", "-Q", "build", "--concurrency=1"]
+          envFrom: [{ configMapRef: { name: agent-eval-config } }, { secretRef: { name: agent-eval-secrets } }]
+          resources: { requests: { cpu: "1", memory: 2Gi }, limits: { cpu: "4", memory: 8Gi } }
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+            - { name: trivy-cache, mountPath: /home/app/.cache/trivy }
+      volumes:
+        - { name: tmp, emptyDir: { sizeLimit: 2Gi } }
+        - { name: trivy-cache, emptyDir: { sizeLimit: 5Gi } }
+---
+apiVersion: apps/v1
+kind: Deployment
 metadata: { name: frontend, namespace: agent-eval }
 spec:
   replicas: 2

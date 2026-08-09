@@ -7,6 +7,7 @@ from app.services.agent_type_identifier import TypeIdentificationResult
 from app.services.model_connectivity import ConnectivityResult
 from app.services.security_service import SecurityScanResult, ScanStatus
 from app.services.submission_service import submission_service
+from app.services.agent_package import AgentPackageContract, BuildContract, RuntimeContract, SecurityContract
 
 
 def _config() -> SubmissionConfigRequest:
@@ -27,12 +28,20 @@ async def test_pipeline_never_persists_llm_api_key():
     identification = TypeIdentificationResult(
         agent_type="short_horizon", subtype="conversational", confidence=1.0
     )
+    contract = AgentPackageContract(
+        schema_version=1,
+        build=BuildContract(mode="legacy", dockerfile="Dockerfile"),
+        runtime=RuntimeContract(),
+        security=SecurityContract(),
+    )
 
     with (
         patch("app.services.submission_service.validate_and_extract"),
         patch("app.services.submission_service._extract_package"),
         patch("app.services.submission_service._cleanup_dir"),
         patch("app.services.submission_service._read_requirements", return_value=""),
+        patch("app.services.submission_service.load_package_contract", return_value=contract),
+        patch("app.services.submission_service.validate_dockerfile"),
         patch(
             "app.services.submission_service.connectivity_checker.check",
             AsyncMock(return_value=connectivity),

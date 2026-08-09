@@ -1,0 +1,13 @@
+schema_version: 1
+
+build:
+  dockerfile: Dockerfile
+  context: .
+
+runtime:
+  protocol: stdio
+  timeout_seconds: 300
+
+security:
+  network: none
+  allowed_domains: []

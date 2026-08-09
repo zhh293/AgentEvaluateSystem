@@ -1,17 +1,17 @@
 import json
+
 from fastapi import APIRouter, Depends, File, Form, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.database import get_db
-from app.infrastructure.minio import minio_client, validate_and_extract
+from app.infrastructure.minio import minio_client
 from app.models.submission import Submission
 from app.schemas.request.submission import SubmissionConfigRequest
-from app.schemas.response.submission import SubmissionResponse
+from app.schemas.response.submission import SubmissionResponse, SubmissionStatusResponse, ToolInfo
 from app.services.api_key_vault import APIKeyVault
 from app.services.config_generator import config_generator
-from app.services.model_connectivity import connectivity_checker
-from app.services.agent_type_identifier import agent_type_identifier
-from app.core.exceptions import ValidationException
+from app.services.submission_service import submission_service
+from app.core.exceptions import ValidationException, NotFoundException
 
 router = APIRouter(prefix="/submissions", tags=["submissions"])
 
@@ -38,7 +38,7 @@ async def submit_agent(
     except Exception as e:
         raise ValidationException(f"配置数据校验失败: {e}")
 
-    # 2. 校验文件类型和大小
+    # 2. 校验文件类型
     if package.content_type and package.content_type not in ALLOWED_MIME_TYPES:
         raise ValidationException(f"不支持的文件类型: {package.content_type}")
 
@@ -46,67 +46,86 @@ async def submit_agent(
     if not package.filename:
         raise ValidationException("文件名不能为空")
 
-    # 3. 解包校验源码结构
-    validate_and_extract(package_bytes, package.filename)
-
-    # 4. 模型连通性校验（失败则立即驳回，不消耗存储）
-    connectivity = await connectivity_checker.check(
-        provider=config.llm_provider,
-        api_base=config.llm_api_base,
-        api_key=config.llm_api_key,
-        model=config.llm_model,
+    # 3. 执行完整接入流水线（校验 → 连通性 → 安全扫描 → 类型识别 → 风险定级）
+    result = await submission_service.run_pipeline(
+        config=config,
+        package_bytes=package_bytes,
+        filename=package.filename,
     )
-    if not connectivity.ok:
-        raise ValidationException(f"模型连通性校验失败: {connectivity.error}")
 
-    # 5. AI 类型识别（用户留空时自动识别）
-    if not config.agent_type or not config.subtype:
-        identification = await agent_type_identifier.identify(config.description)
-        if not config.agent_type:
-            config.agent_type = identification.agent_type
-        if not config.subtype:
-            config.subtype = identification.subtype
-
-    # 6. 生成 agent.config.yaml
-    yaml_content = config_generator.generate(config)
-
-    # 7. 创建 Submission 记录
-    submission = Submission(
-        agent_name=config.agent_name,
-        version=config.version,
-        agent_type=config.agent_type or "short_horizon",
-        horizon="short" if config.agent_type != "long_horizon" else "long",
-        subtype=config.subtype,
-        risk_level="medium",
-        config=config.model_dump(),
-        source_package_path="",
-        source_package_hash="",
-        status="pending_validation",
-    )
+    submission = result.submission
     db.add(submission)
     await db.flush()
-
     submission_id = str(submission.id)
 
-    # 8. 上传源码包到 MinIO
+    # 4. 生成 YAML 并上传到 MinIO
+    yaml_content = config_generator.generate(config)
+    minio_client.upload_config(submission_id=submission_id, yaml_content=yaml_content)
+
+    # 5. 上传源码包到 MinIO
     object_path, sha256_hash = minio_client.upload_package(
         submission_id=submission_id,
         file_data=package_bytes,
         filename=package.filename,
     )
 
-    # 9. 上传生成的 agent.config.yaml 到 MinIO
-    config_path = minio_client.upload_config(
-        submission_id=submission_id, yaml_content=yaml_content
-    )
-
-    # 10. 暂存 API Key
+    # 6. 暂存 API Key
     APIKeyVault.stash(submission_id, config.llm_api_key)
 
-    # 11. 回填 MinIO 路径和哈希
+    # 7. 回填 MinIO 路径和哈希
     submission.source_package_path = object_path
     submission.source_package_hash = sha256_hash
     await db.flush()
     await db.refresh(submission)
 
-    return submission
+    return _build_response(submission, result)
+
+
+@router.get("/{submission_id}/status", response_model=SubmissionStatusResponse)
+async def get_submission_status(
+    submission_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    submission = await db.get(Submission, submission_id)
+    if not submission:
+        raise NotFoundException(f"Submission {submission_id} 不存在")
+
+    return _build_status_response(submission)
+
+
+def _build_tool_info(result) -> list[ToolInfo]:
+    return [
+        ToolInfo(id=t.id, name=t.name, category=t.category, risk_level=t.risk_level)
+        for t in result.matched_tools
+    ]
+
+
+def _build_response(submission: Submission, result) -> SubmissionResponse:
+    return SubmissionResponse(
+        id=str(submission.id),
+        agent_name=submission.agent_name,
+        version=submission.version,
+        agent_type=submission.agent_type,
+        horizon=submission.horizon,
+        subtype=submission.subtype,
+        risk_level=submission.risk_level,
+        status=submission.status,
+        status_message=submission.status_message,
+        matched_tools=_build_tool_info(result),
+        risk_reasons=result.risk_assessment.reasons if result.risk_assessment else [],
+        created_at=submission.created_at,
+    )
+
+
+def _build_status_response(submission: Submission) -> SubmissionStatusResponse:
+    return SubmissionStatusResponse(
+        id=str(submission.id),
+        agent_name=submission.agent_name,
+        agent_type=submission.agent_type,
+        status=submission.status,
+        risk_level=submission.risk_level,
+        status_message=submission.status_message,
+        config=submission.config,
+        created_at=submission.created_at,
+        updated_at=submission.updated_at,
+    )

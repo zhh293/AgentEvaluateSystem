@@ -11,3 +11,5 @@ pyyaml==6.*
 minio==7.2.*
 asyncpg==0.30.*
 httpx==0.28.*
+bandit==1.8.*
+safety==3.*

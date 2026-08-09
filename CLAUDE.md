@@ -95,7 +95,7 @@ cd deploy/docker-compose && docker compose up -d
 
 - `docs/` — 设计文档
 - `backend/app/api/` — API 路由层（薄层，不含业务逻辑）
-- `backend/app/services/` — 业务逻辑层（config_generator, model_connectivity, agent_type_identifier, api_key_vault）
+- `backend/app/services/` — 业务逻辑层（submission_service, config_generator, model_connectivity, agent_type_identifier, security_service, risk_analyzer, api_key_vault）
 - `backend/app/engine/` — 评测引擎（核心评测逻辑，无副作用；含 builtin_tools 系统内置工具库）
 - `backend/app/infrastructure/` — 基础设施层（database session, minio client）
 - `backend/app/models/` — SQLAlchemy ORM 模型
@@ -129,4 +129,6 @@ cd deploy/docker-compose && docker compose up -d
 | 2.1 源码包上传 + 配置接收 | ✅ | SubmissionConfigRequest, Submission API, MinIO adapter, API Key Vault, database session |
 | 2.2 系统自动生成 agent.config.yaml | ✅ | ConfigGenerator, BuiltinTool 库 (7 tools), YAML 自动生成并上传 MinIO |
 | 2.3 模型连通性校验 + AI 类型识别 | ✅ | ModelConnectivityChecker, AgentTypeIdentifier, 连通性前置校验 + 类型自动识别 |
-| 2.4 静态安全扫描 + 依赖审计 | ⬜ 下一步 | — |
+| 2.4 静态安全扫描 + 依赖审计 | ✅ | SecurityScanner (Bandit风格18种危险模式+14个CVE库), 三级处理策略 |
+| 2.5 风险定级 + 接入层 API 收尾 | ✅ | RiskAnalyzer, SubmissionService 流水线编排, GET status 接口, 完整接入链路串联 |
+| 3.1 沙箱运行时环境 | ⬜ 下一步 | — |
